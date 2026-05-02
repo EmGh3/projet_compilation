@@ -185,8 +185,6 @@ Source Code
 [Syntax Analyzer] → AST
     ↓
 [Semantic Analyzer] → Validation Report
-    ↓
-Code Generation / Interpretation
 ```
 
 ---
@@ -198,6 +196,11 @@ The three analyzers work together to provide a complete compilation stage:
 1. Create a `Lexer` instance and tokenize source code
 2. Create a `RecursiveDescentParser` with the tokens and parse them
 3. Create a `SemanticAnalyzer` instance and analyze the AST
+   
+To use the compiler in interactive mode run
+```
+python interactive_compiler.py
+```
 
 ---
 
