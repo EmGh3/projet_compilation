@@ -305,21 +305,17 @@ class RecursiveDescentParser:
         return None
 
     def _synchronize(self):
-        """
-        Récupération d'erreur après un ';' manquant.
-        - Consomme les tokens jusqu'à trouver ';' (qu'il consomme aussi).
-        - S'arrête DEVANT '}' sans le consommer, pour ne pas briser la
-          structure des blocs if/else/while en cours de parsing.
-        """
+        start = self.pos
         while not self._at_end():
             t = self._cur()
             if isinstance(t, Operator) and t.symbol == ';':
-                self._advance()   # consomme le ';', on peut reprendre
+                self._advance()
                 return
             if isinstance(t, Operator) and t.symbol == '}':
-                return            # on s'arrête AVANT le '}', sans le toucher
+                return
             self._advance()
-
+        if self.pos == start and not self._at_end():
+            self._advance()  # force progress, prevent infinite loop
     # ------------------------------------------------------------------
     # Point d'entrée
     # ------------------------------------------------------------------
@@ -338,8 +334,13 @@ class RecursiveDescentParser:
         stmts = []
         while not self._at_end():
             t = self._cur()
-            if stop_on_rbrace and isinstance(t, Operator) and t.symbol == '}':
-                break
+            if isinstance(t, Operator) and t.symbol == '}':
+                if stop_on_rbrace:
+                    break
+                # Stray '}' at top level — consume it to avoid infinite loop
+                self._error(f"'}}' inattendu à la ligne {t.line}, col {t.col}")
+                self._advance()
+                continue
             stmt = self._parse_statement()
             if stmt is not None:
                 stmts.append(stmt)
@@ -446,23 +447,25 @@ class RecursiveDescentParser:
     def _parse_while_stmt(self) -> Optional[WhileStmt]:
         self._consume_keyword('while')
 
-        # Au lieu de return None direct, on signale juste l'erreur
         if not self._consume_operator('('):
-            # On ne s'arrête pas forcément ici, on tente de parser la condition quand même
-            pass 
+            self._synchronize()
+            return None
 
         cond = self._parse_condition()
-        
+        if cond is None:
+            self._synchronize()
+            return None
+
         if not self._consume_operator(')'):
-            pass
+            self._synchronize()
+            return None
 
         if not self._consume_operator('{'):
-            self._synchronize() # On synchronise seulement si on ne trouve pas le début du bloc
+            self._synchronize()
             return None
 
         body = self._parse_statement_list(stop_on_rbrace=True)
         self._consume_operator('}')
-
         return WhileStmt(cond, body)
 
     # --- Condition : <expr> <relop> <expr>  |  <bool_expr> ---

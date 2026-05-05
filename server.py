@@ -23,7 +23,6 @@ from syntax_analyzer import (
 from semantic_analyzer import SemanticAnalyzer
 
 app = Flask(__name__, static_folder="static")
-lexer = Lexer()
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +112,7 @@ def index():
 def compile_code():
     data = request.get_json()
     source = data.get("code", "")
-
+    lexer = Lexer()
     result = {
         "lexer":    {"ok": False, "tokens": [], "error": None},
         "parser":   {"ok": False, "ast": None, "errors": []},
@@ -142,11 +141,11 @@ def compile_code():
     parser = RecursiveDescentParser(tokens)
     ast = parser.parse()
 
+    result["parser"]["errors"] = [str(e) for e in parser.errors]
     if ast and not parser.errors:
         result["parser"]["ok"] = True
         result["parser"]["ast"] = ast_to_dict(ast)
     else:
-        result["parser"]["errors"] = [str(e) for e in parser.errors]
         return jsonify(result)
 
     # ---- Phase 3 : Sémantique ------------------------------------------

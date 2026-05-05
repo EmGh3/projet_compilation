@@ -657,32 +657,37 @@ function setStatus(state, text) {
 // Compile
 // ============================================================
 let lastAst = null;
+let isCompiling = false;
 
 async function compile() {
   const code = cm.getValue();
   if (!code.trim()) return;
+  if (isCompiling) return;          // ← prevent concurrent compilations
+  isCompiling = true;
 
   clearMarkers();
   setStatus('loading', 'Compilation…');
   document.getElementById('loading').classList.add('visible');
 
-  const res = await fetch('/api/compile', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code })
-  });
-  const data = await res.json();
-  renderResults(data);
-  document.getElementById('loading').classList.remove('visible');
+  try {
+    const res = await fetch('/api/compile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    renderResults(data);
+  } finally {
+    isCompiling = false;             // ← always release the guard
+    document.getElementById('loading').classList.remove('visible');
+  }
 }
-
 document.getElementById('btn-compile').addEventListener('click', compile);
 document.getElementById('btn-clear').addEventListener('click', () => {
   cm.setValue('');
   clearResults();
   setStatus('', 'Prêt');
 });
-
 // ============================================================
 // Render results
 // ============================================================
@@ -785,19 +790,21 @@ function renderASTPrepare(parser) {
     badge.className = 'badge has-error';
     const empty = document.getElementById('empty-ast');
     const content = document.getElementById('ast-content');
-    content.innerHTML = `<div class="msg-list" style="padding:16px">` +
-      parser.errors.map(e => `<div class="msg-item error"><span class="msg-icon">✗</span><span class="msg-text">${escHtml(e)}</span></div>`).join('') +
-      `</div>`;
-    empty.style.display = 'none';
-    content.style.display = '';
+    empty.innerHTML = `<div class="msg-list" style="padding:16px 0">` +
+      parser.errors.map(e =>
+        `<div class="msg-item error"><span class="msg-icon">✗</span><span class="msg-text">${escHtml(e)}</span></div>`
+      ).join('') + `</div>`;
+    empty.style.display = '';
+    content.style.display = 'none';
+    document.getElementById('ast-container').innerHTML = '';
     lastAst = null;
-    return;
+    return;   // ← THIS was missing
   }
+
   badge.textContent = 'OK';
   badge.className = 'badge has-ok';
   lastAst = parser.ast;
 
-  // Only render if AST tab is active
   if (document.querySelector('.tab[data-tab="ast"]').classList.contains('active')) {
     renderAST(lastAst);
   } else {
