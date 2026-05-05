@@ -1,561 +1,562 @@
-from typing import List, Optional, Union
-from dataclasses import dataclass
-import re
-from lexical_analyzer import Lexer, Token, Keyword, Identifier as LexerIdentifier, Number as LexerNumber, Operator, \
-    StringLiteral as LexerStringLiteral
 """
-Grammar:
-<program> ::= <statement_list>
-<statement_list> ::= <statement> <statement_list> | ε
-<statement> ::= <declaration> | <assignment> | <if_stmt>
-<declaration> ::= <type> <identifier> ;
-<assignment> ::= <identifier> = <expression> ;
-<if_stmt> ::= if ( <condition> ) then { <statement_list> } | if ( <condition> ) then { <statement_list> } else { <statement_list> }
-<condition> ::= <expression> <relop> <expression>
-<expression> ::= <term> <binop> <expression> | <term>
-<term> ::= <identifier> | <number> | <string_literal> | <unary_expr>
-<unary_expr> ::= - <number>
-<type> ::= int | string
-<relop> ::= <= | >= | > | < | == | !=
-<binop> ::= + | - | * | /
-<identifier> ::= [a-zA-Z_][a-zA-Z0-9_]*
-<number> ::= [0-9]+ | -[0-9]+
-<string_literal> ::= "[^"]*"
+Syntax Analyzer — Phase 2 du compilateur (Recursive Descent Parser)
+
+Améliorations apportées :
+  - ParserToken supprimé : on utilise directement isinstance() sur les tokens du Lexer
+  - Numéros de ligne dans chaque erreur de parsing
+  - Nouvelle instruction : while (condition) { ... }
+  - Déclaration avec initialisation : int x = 5;  string s = "hello";
+  - Expressions parenthésées : (x + 1) * 2
+  - Type bool et littéraux true/false
+  - Récupération d'erreurs améliorée (synchronisation sur ';' et '}')
+
+Grammaire :
+  <program>      ::= <statement_list>
+  <stmt_list>    ::= <statement> <stmt_list> | ε
+  <statement>    ::= <declaration> | <assignment> | <if_stmt> | <while_stmt>
+  <declaration>  ::= <type> <id> [ = <expression> ] ;
+  <assignment>   ::= <id> = <expression> ;
+  <if_stmt>      ::= if ( <condition> ) then { <stmt_list> } [ else { <stmt_list> } ]
+  <while_stmt>   ::= while ( <condition> ) { <stmt_list> }
+  <condition>    ::= <expression> <relop> <expression>
+  <expression>   ::= <term> { <binop> <term> }
+  <term>         ::= <id> | <number> | <string> | <bool> | ( <expression> ) | - <number>
+  <type>         ::= int | string | bool
+  <relop>        ::= <= | >= | > | < | == | !=
+  <binop>        ::= + | - | * | /
 """
 
-# AST Node classes
+from __future__ import annotations
+from typing import List, Optional, Union
+from dataclasses import dataclass, field
+
+from lexical_analyzer import (
+    Token, Keyword, Identifier as LexIdent, Number as LexNumber,
+    Operator, StringLiteral as LexString, BoolLiteral,
+)
+
+
+# ---------------------------------------------------------------------------
+# Nœuds de l'AST
+# ---------------------------------------------------------------------------
+
 @dataclass
 class ASTNode:
-    """Base class for all AST nodes"""
+    """Classe de base pour tous les nœuds de l'AST."""
     pass
 
 
 @dataclass
 class Program(ASTNode):
-    """Root node of the program"""
     statements: List[ASTNode]
 
-    def __str__(self, indent=0):
-        result = "Program\n"
-        for stmt in self.statements:
-            result += "  " * (indent + 1) + str(stmt) + "\n"
-        return result.rstrip()
+    def __str__(self, indent: int = 0) -> str:
+        pad = "  " * indent
+        lines = [f"{pad}Program"]
+        for s in self.statements:
+            if hasattr(s, '__str__') and 'indent' in s.__str__.__code__.co_varnames:
+                lines.append(s.__str__(indent + 1))
+            else:
+                lines.append("  " * (indent + 1) + str(s))
+        return "\n".join(lines)
 
 
 @dataclass
 class DeclarationStmt(ASTNode):
-    """Variable declaration statement"""
+    """int x;  ou  int x = 5;"""
     var_type: str
     identifier: str
+    init_expr: Optional['Expression'] = None  # optionnel : valeur initiale
 
-    def __str__(self):
+    def __str__(self) -> str:
+        if self.init_expr:
+            return f"DeclStmt({self.var_type}, {self.identifier} = {self.init_expr})"
         return f"DeclStmt({self.var_type}, {self.identifier})"
 
 
 @dataclass
 class AssignStmt(ASTNode):
-    """Variable assignment statement"""
     identifier: str
     expression: 'Expression'
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"AssignStmt({self.identifier}, {self.expression})"
 
 
 @dataclass
 class IfStmt(ASTNode):
-    """If-then-else statement"""
     condition: 'Condition'
     body: List[ASTNode]
     else_body: Optional[List[ASTNode]] = None
 
-    def __str__(self):
-        result = f"IfStmt({self.condition})\n"
-        for stmt in self.body:
-            result += "    " + str(stmt) + "\n"
+    def __str__(self, indent: int = 0) -> str:
+        pad = "  " * indent
+        lines = [f"{pad}IfStmt({self.condition})"]
+        for s in self.body:
+            lines.append("  " * (indent + 1) + str(s))
         if self.else_body:
-            result += "  Else\n"
-            for stmt in self.else_body:
-                result += "    " + str(stmt) + "\n"
-        return result.rstrip()
+            lines.append(f"{pad}  Else")
+            for s in self.else_body:
+                lines.append("  " * (indent + 1) + str(s))
+        return "\n".join(lines)
+
+
+@dataclass
+class WhileStmt(ASTNode):
+    """while (condition) { stmt_list }"""
+    condition: 'Condition'
+    body: List[ASTNode]
+
+    def __str__(self, indent: int = 0) -> str:
+        pad = "  " * indent
+        lines = [f"{pad}WhileStmt({self.condition})"]
+        for s in self.body:
+            lines.append("  " * (indent + 1) + str(s))
+        return "\n".join(lines)
 
 
 @dataclass
 class Condition(ASTNode):
-    """Condition for if statement"""
     left: 'Expression'
     operator: str
     right: 'Expression'
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Condition({self.left} {self.operator} {self.right})"
 
 
 @dataclass
 class BinaryOp(ASTNode):
-    """Binary operation expression"""
     op: str
     left: 'Expression'
     right: 'Expression'
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"BinaryOp({self.op}, {self.left}, {self.right})"
 
 
 @dataclass
 class UnaryOp(ASTNode):
-    """Unary operation expression (negation)"""
     op: str
     operand: 'Expression'
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"UnaryOp({self.op}, {self.operand})"
 
 
 @dataclass
 class Identifier(ASTNode):
-    """Identifier node"""
     name: str
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"ID({self.name})"
 
 
 @dataclass
 class Number(ASTNode):
-    """Integer literal node"""
     value: int
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Num({self.value})"
 
 
 @dataclass
 class StringLiteral(ASTNode):
-    """String literal node"""
     value: str
 
-    def __str__(self):
-        return f"String({self.value})"
+    def __str__(self) -> str:
+        return f'String("{self.value}")'
 
 
-Expression = Union[BinaryOp, UnaryOp, Identifier, Number, StringLiteral]
+@dataclass
+class BoolLiteralNode(ASTNode):
+    value: bool
+
+    def __str__(self) -> str:
+        return f"Bool({'true' if self.value else 'false'})"
 
 
-class ParserToken:
-    """Wrapper class to convert Lexer tokens to parser-compatible tokens"""
+Expression = Union[BinaryOp, UnaryOp, Identifier, Number, StringLiteral, BoolLiteralNode]
 
-    def __init__(self, lexer_token):
-        self.lexer_token = lexer_token
-        self.type = self._determine_type()
-        self.value = self._determine_value()
+# Opérateurs relationnels et arithmétiques
+RELOPS = {'>', '<', '==', '!=', '>=', '<='}
+BINOPS = {'+', '-', '*', '/'}
+TYPES  = {'int', 'string', 'bool'}
 
-    def _determine_type(self):
-        """Determine the token type for the parser"""
-        token = self.lexer_token
-        token_str = str(token)
 
-        # Check for string literals
-        if isinstance(token, LexerStringLiteral) or token_str.startswith('STRING("'):
-            return 'STRING'
+# ---------------------------------------------------------------------------
+# Erreur de parsing
+# ---------------------------------------------------------------------------
 
-        # Check for keywords
-        if isinstance(token, Keyword) or token_str.startswith("KW('"):
-            # Extract the keyword value
-            if isinstance(token, Keyword):
-                kw_value = str(token).replace("KW('", "").replace("')", "")
-            else:
-                kw_value = token_str.replace("KW('", "").replace("')", "")
+class ParseError:
+    def __init__(self, message: str, line: int, col: int):
+        self.message = message
+        self.line = line
+        self.col = col
 
-            # Check if it's a type keyword
-            if kw_value in ['int', 'string']:
-                return 'TYPE'
-            # Check if it's a control flow keyword
-            elif kw_value in ['if', 'then', 'else']:
-                return 'KEYWORD'
-            else:
-                return 'KEYWORD'
+    def __str__(self) -> str:
+        return f"Erreur syntaxique à la ligne {self.line}, col {self.col} : {self.message}"
 
-        # Check if token is an identifier that should be a TYPE
-        if isinstance(token, LexerIdentifier) or token_str.startswith("ID('"):
-            id_value = str(token).replace("ID('", "").replace("')", "")
-            if id_value in ['int', 'string']:
-                return 'TYPE'
-            return 'IDENTIFIER'
 
-        # Check for numbers
-        if isinstance(token, LexerNumber) or token_str.startswith("NUM("):
-            return 'NUMBER'
-
-        # Check for operators
-        if isinstance(token, Operator):
-            symbol = str(token).strip("'")
-            if symbol in ['+', '-', '*', '/']:
-                return 'OPERATOR'
-            elif symbol == '=':
-                return 'OPERATOR'
-            elif symbol in ['>', '<', '==', '!=','>=','<=']:
-                return 'RELOP'
-            elif symbol == ';':
-                return 'SEMICOLON'
-            elif symbol == '{':
-                return 'LBRACE'
-            elif symbol == '}':
-                return 'RBRACE'
-            elif symbol == '(':
-                return 'LPAREN'
-            elif symbol == ')':
-                return 'RPAREN'
-            else:
-                return 'OPERATOR'
-
-        # Check for string representations of operators
-        if token_str.startswith("'") and token_str.endswith("'"):
-            symbol = token_str.strip("'")
-            if symbol == ';':
-                return 'SEMICOLON'
-            elif symbol == '=':
-                return 'OPERATOR'
-            elif symbol == '+':
-                return 'OPERATOR'
-            elif symbol == '-':
-                return 'OPERATOR'
-            elif symbol == '*':
-                return 'OPERATOR'
-            elif symbol == '/':
-                return 'OPERATOR'
-            elif symbol in ['>', '<', '==', '!=', '>=', '<=']:
-                return 'RELOP'
-            elif symbol == '{':
-                return 'LBRACE'
-            elif symbol == '}':
-                return 'RBRACE'
-            elif symbol == '(':
-                return 'LPAREN'
-            elif symbol == ')':
-                return 'RPAREN'
-
-        return 'UNKNOWN'
-
-    def _determine_value(self):
-        """Determine the token value for the parser"""
-        token = self.lexer_token
-        token_str = str(token)
-
-        # Check for string literals
-        if isinstance(token, LexerStringLiteral) or token_str.startswith('STRING("'):
-            if isinstance(token, LexerStringLiteral):
-                return token.value
-            else:
-                # Extract value from STRING("value") format
-                match = re.search(r'STRING\("([^"]*)"\)', token_str)
-                if match:
-                    return match.group(1)
-                return ""
-
-        # Check for keywords
-        if isinstance(token, Keyword) or token_str.startswith("KW('"):
-            return token_str.replace("KW('", "").replace("')", "")
-
-        # Check for identifiers
-        if isinstance(token, LexerIdentifier) or token_str.startswith("ID('"):
-            return token_str.replace("ID('", "").replace("')", "")
-
-        # Check for numbers
-        if isinstance(token, LexerNumber) or token_str.startswith("NUM("):
-            num_str = token_str.replace("NUM(", "").replace(")", "")
-            return num_str
-
-        # Check for operators
-        if isinstance(token, Operator):
-            return str(token).strip("'")
-
-        # Check for string representations of operators
-        if token_str.startswith("'") and token_str.endswith("'"):
-            return token_str.strip("'")
-
-        return token_str
-
-    def __repr__(self):
-        return f"ParserToken({self.type}, {self.value})"
-
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
 
 class RecursiveDescentParser:
-    """Recursive descent parser for the language with if-then-else support and negative numbers"""
+    """
+    Parser par descente récursive.
+    Utilise directement isinstance() sur les tokens du Lexer — aucun
+    re-parsing par représentation textuelle.
+    """
 
     def __init__(self, tokens: List[Token]):
-        # Convert Lexer tokens to Parser tokens
-        self.tokens = self._convert_tokens(tokens)
+        # Filtre défensif : on ne garde que les vrais tokens
+        self.tokens = [t for t in tokens if isinstance(t, Token)]
         self.pos = 0
-        self.current_token = self.tokens[0] if self.tokens else None
-        self.errors = []
+        self.errors: List[ParseError] = []
 
-    def _convert_tokens(self, lexer_tokens: List[Token]) -> List[ParserToken]:
-        """Convert tokens from the Lexer to parser-compatible tokens"""
-        parser_tokens = []
-        for token in lexer_tokens:
-            parser_token = ParserToken(token)
-            # Only add known token types
-            if parser_token.type != 'UNKNOWN':
-                parser_tokens.append(parser_token)
+    # ------------------------------------------------------------------
+    # Helpers de navigation
+    # ------------------------------------------------------------------
 
-        # Add EOF token
-        eof_token = type('obj', (object,), {'type': 'EOF', 'value': ''})()
-        parser_tokens.append(eof_token)
-
-        return parser_tokens
-
-    def advance(self):
-        """Move to the next token"""
-        self.pos += 1
+    def _cur(self) -> Optional[Token]:
         if self.pos < len(self.tokens):
-            self.current_token = self.tokens[self.pos]
+            return self.tokens[self.pos]
+        return None
 
-    def peek(self):
-        """Look at the current token"""
-        return self.current_token
-
-    def peek_next(self):
-        """Look at the next token without advancing"""
+    def _peek_next(self) -> Optional[Token]:
         if self.pos + 1 < len(self.tokens):
             return self.tokens[self.pos + 1]
         return None
 
-    def expect(self, token_type: str, value: Optional[str] = None) -> bool:
-        """Check if current token matches expected type and optional value"""
-        token = self.peek()
-        if token.type != token_type:
-            return False
-        if value is not None and token.value != value:
-            return False
-        return True
+    def _advance(self) -> Optional[Token]:
+        tok = self._cur()
+        self.pos += 1
+        return tok
 
-    def consume(self, token_type: str, value: Optional[str] = None):
-        """Consume a token if it matches, otherwise raise an error"""
-        if self.expect(token_type, value):
-            token = self.peek()
-            self.advance()
-            return token
+    def _at_end(self) -> bool:
+        return self.pos >= len(self.tokens)
+
+    # Vérification de type + valeur sans toucher à str()
+    def _is_keyword(self, value: str) -> bool:
+        t = self._cur()
+        return isinstance(t, Keyword) and t.value == value
+
+    def _is_type_keyword(self) -> bool:
+        t = self._cur()
+        return isinstance(t, Keyword) and t.value in TYPES
+
+    def _is_operator(self, symbol: str) -> bool:
+        t = self._cur()
+        return isinstance(t, Operator) and t.symbol == symbol
+
+    def _is_relop(self) -> bool:
+        t = self._cur()
+        return isinstance(t, Operator) and t.symbol in RELOPS
+
+    def _is_binop(self) -> bool:
+        t = self._cur()
+        return isinstance(t, Operator) and t.symbol in BINOPS
+
+    def _pos_info(self) -> tuple:
+        """Retourne (line, col) du token courant."""
+        t = self._cur()
+        if t:
+            return t.line, t.col
+        return 0, 0
+
+    # ------------------------------------------------------------------
+    # Gestion des erreurs + récupération
+    # ------------------------------------------------------------------
+
+    def _error(self, msg: str):
+        line, col = self._pos_info()
+        self.errors.append(ParseError(msg, line, col))
+
+    def _consume_keyword(self, value: str) -> bool:
+        if self._is_keyword(value):
+            self._advance()
+            return True
+        t = self._cur()
+        got = str(t) if t else "fin de fichier"
+        self._error(f"Mot-clé '{value}' attendu, obtenu {got}")
+        return False
+
+    def _consume_operator(self, symbol: str, context: str = "") -> bool:
+        if self._is_operator(symbol):
+            self._advance()
+            return True
+        t = self._cur()
+        got = str(t) if t else "fin de fichier"
+        if symbol == ';':
+            ctx = f" après {context}" if context else ""
+            self._error(f"';' manquant{ctx} — obtenu {got}")
         else:
-            expected = f"{token_type}({value})" if value else token_type
-            current = self.peek()
-            self.error(f"Expected {expected}, got {current.type}({current.value})")
-            # Error recovery: skip current token
-            self.advance()
-            return None
+            self._error(f"Opérateur '{symbol}' attendu, obtenu {got}")
+        return False
 
-    def error(self, message: str):
-        """Record an error message"""
-        self.errors.append(f"Parse error at position {self.pos}: {message}")
+    def _consume_identifier(self) -> Optional[str]:
+        t = self._cur()
+        if isinstance(t, LexIdent):
+            self._advance()
+            return t.name
+        got = str(t) if t else "fin de fichier"
+        self._error(f"Identifiant attendu, obtenu {got}")
+        return None
+
+    def _synchronize(self):
+        """
+        Récupération d'erreur après un ';' manquant.
+        - Consomme les tokens jusqu'à trouver ';' (qu'il consomme aussi).
+        - S'arrête DEVANT '}' sans le consommer, pour ne pas briser la
+          structure des blocs if/else/while en cours de parsing.
+        """
+        while not self._at_end():
+            t = self._cur()
+            if isinstance(t, Operator) and t.symbol == ';':
+                self._advance()   # consomme le ';', on peut reprendre
+                return
+            if isinstance(t, Operator) and t.symbol == '}':
+                return            # on s'arrête AVANT le '}', sans le toucher
+            self._advance()
+
+    # ------------------------------------------------------------------
+    # Point d'entrée
+    # ------------------------------------------------------------------
 
     def parse(self) -> Optional[Program]:
-        """Parse the entire program"""
-        statements = self.parse_statement_list()
-
+        stmts = self._parse_statement_list()
         if self.errors:
-            print("Errors found during parsing:")
-            for error in self.errors:
-                print(f"  - {error}")
             return None
+        return Program(stmts)
 
-        return Program(statements)
+    # ------------------------------------------------------------------
+    # Règles grammaticales
+    # ------------------------------------------------------------------
 
-    def parse_statement_list(self, stop_tokens=None) -> List[ASTNode]:
-        """Parse a list of statements until a stop token or EOF"""
-        if stop_tokens is None:
-            stop_tokens = []
-
-        statements = []
-
-        while self.peek().type != 'EOF':
-            # Check if we've encountered a stop token
-            if self.peek().type in stop_tokens:
+    def _parse_statement_list(self, stop_on_rbrace: bool = False) -> List[ASTNode]:
+        stmts = []
+        while not self._at_end():
+            t = self._cur()
+            if stop_on_rbrace and isinstance(t, Operator) and t.symbol == '}':
                 break
+            stmt = self._parse_statement()
+            if stmt is not None:
+                stmts.append(stmt)
+        return stmts
 
-            stmt = self.parse_statement()
-            if stmt:
-                statements.append(stmt)
+    def _parse_statement(self) -> Optional[ASTNode]:
+        t = self._cur()
 
-        return statements
-
-    def parse_statement(self) -> Optional[ASTNode]:
-        """Parse a single statement (declaration, assignment, or if-then-else)"""
-        # Check for declaration statement
-        if self.peek().type == 'TYPE':
-            return self.parse_declaration()
-        # Check for if statement
-        elif self.expect('KEYWORD', 'if'):
-            return self.parse_if_stmt()
-        # Check for assignment statement
-        elif self.peek().type == 'IDENTIFIER':
-            return self.parse_assignment()
-        else:
-            self.error(f"Unexpected token {self.peek().type}({self.peek().value})")
-            self.advance()
+        if t is None:
             return None
 
-    def parse_declaration(self) -> DeclarationStmt:
-        """Parse a variable declaration: <type> <id> ;"""
-        # Parse type
-        type_token = self.consume('TYPE')
-        if not type_token:
+        # Déclaration : int | string | bool
+        if self._is_type_keyword():
+            return self._parse_declaration()
+
+        # If
+        if self._is_keyword('if'):
+            return self._parse_if_stmt()
+
+        # While
+        if self._is_keyword('while'):
+            return self._parse_while_stmt()
+
+        # Assignation
+        if isinstance(t, LexIdent):
+            return self._parse_assignment()
+
+        self._error(f"Instruction inattendue : {t}")
+        self._synchronize()
+        return None
+
+    # --- Déclaration : <type> <id> [ = <expr> ] ; ---
+    def _parse_declaration(self) -> Optional[DeclarationStmt]:
+        type_tok = self._advance()   # consomme le mot-clé de type
+        var_type = type_tok.value
+
+        name = self._consume_identifier()
+        if name is None:
+            self._synchronize()
             return None
 
-        # Parse identifier
-        ident_token = self.consume('IDENTIFIER')
-        if not ident_token:
+        init_expr = None
+        # Initialisation optionnelle : = <expr>
+        if self._is_operator('='):
+            self._advance()  # consomme '='
+            init_expr = self._parse_expression()
+
+        if not self._consume_operator(';', f"la déclaration de '{name}'"):
+            self._synchronize()
+        return DeclarationStmt(var_type, name, init_expr)
+
+    # --- Assignation : <id> = <expr> ; ---
+    def _parse_assignment(self) -> Optional[AssignStmt]:
+        name = self._consume_identifier()
+        if name is None:
+            self._synchronize()
             return None
 
-        # Consume semicolon
-        self.consume('SEMICOLON', ';')
-
-        return DeclarationStmt(type_token.value, ident_token.value)
-
-    def parse_if_stmt(self) -> IfStmt:
-        """Parse an if-then-else statement: if ( <condition> ) then { <stmt_list> } [else { <stmt_list> }]"""
-        # Consume 'if' keyword
-        self.consume('KEYWORD', 'if')
-
-        # Consume opening parenthesis
-        self.consume('LPAREN', '(')
-
-        # Parse condition
-        condition = self.parse_condition()
-        if not condition:
+        if not self._consume_operator('='):
+            self._synchronize()
             return None
 
-        # Consume closing parenthesis
-        self.consume('RPAREN', ')')
+        expr = self._parse_expression()
+        if expr is None:
+            self._synchronize()
+            return None
 
-        # Consume 'then' keyword
-        self.consume('KEYWORD', 'then')
+        if not self._consume_operator(';', f"l'assignation de '{name}'"):
+            self._synchronize()
+        return AssignStmt(name, expr)
 
-        # Consume opening brace
-        self.consume('LBRACE', '{')
+    # --- If : if ( <cond> ) then { <stmts> } [ else { <stmts> } ] ---
+    def _parse_if_stmt(self) -> Optional[IfStmt]:
+        self._consume_keyword('if')
 
-        # Parse body statements - stop when we hit a closing brace
-        body = self.parse_statement_list(stop_tokens=['RBRACE'])
+        if not self._consume_operator('('):
+            self._synchronize(); return None
+        cond = self._parse_condition()
+        if cond is None:
+            self._synchronize(); return None
+        if not self._consume_operator(')'):
+            self._synchronize(); return None
 
-        # Consume closing brace
-        self.consume('RBRACE', '}')
+        self._consume_keyword('then')
 
-        # Check for optional else clause
+        if not self._consume_operator('{'):
+            self._synchronize(); return None
+        body = self._parse_statement_list(stop_on_rbrace=True)
+        if not self._consume_operator('}'):
+            self._synchronize(); return None
+
         else_body = None
-        if self.expect('KEYWORD', 'else'):
-            # Consume 'else' keyword
-            self.consume('KEYWORD', 'else')
+        if self._is_keyword('else'):
+            self._advance()
+            if not self._consume_operator('{'):
+                self._synchronize(); return None
+            else_body = self._parse_statement_list(stop_on_rbrace=True)
+            if not self._consume_operator('}'):
+                self._synchronize()
 
-            # Consume opening brace
-            self.consume('LBRACE', '{')
+        return IfStmt(cond, body, else_body)
 
-            # Parse else body statements
-            else_body = self.parse_statement_list(stop_tokens=['RBRACE'])
+    # --- While : while ( <cond> ) { <stmts> } ---
+    def _parse_while_stmt(self) -> Optional[WhileStmt]:
+        self._consume_keyword('while')
 
-            # Consume closing brace
-            self.consume('RBRACE', '}')
+        # Au lieu de return None direct, on signale juste l'erreur
+        if not self._consume_operator('('):
+            # On ne s'arrête pas forcément ici, on tente de parser la condition quand même
+            pass 
 
-        return IfStmt(condition, body, else_body)
+        cond = self._parse_condition()
+        
+        if not self._consume_operator(')'):
+            pass
 
-    def parse_condition(self) -> Condition:
-        """Parse a condition: <expr> <relop> <expr>"""
-        # Parse left expression
-        left = self.parse_expression()
-        if not left:
+        if not self._consume_operator('{'):
+            self._synchronize() # On synchronise seulement si on ne trouve pas le début du bloc
             return None
 
-        # Parse relational operator
-        relop_token = self.consume('RELOP')
-        if not relop_token:
+        body = self._parse_statement_list(stop_on_rbrace=True)
+        self._consume_operator('}')
+
+        return WhileStmt(cond, body)
+
+    # --- Condition : <expr> <relop> <expr>  |  <bool_expr> ---
+    def _parse_condition(self) -> Optional[Condition]:
+        left = self._parse_expression()
+        if left is None:
             return None
 
-        # Parse right expression
-        right = self.parse_expression()
-        if not right:
+        # Condition booléenne seule : while (true) / while (actif) / if (b) then
+        # Si le prochain token est ')' sans relop → condition implicite == true
+        if not self._is_relop():
+            t = self._cur()
+            if isinstance(t, Operator) and t.symbol == ')':
+                return Condition(left, '==', BoolLiteralNode(True))
+            self._error(f"Opérateur relationnel attendu, obtenu {t}")
             return None
 
-        return Condition(left, relop_token.value, right)
+        op = self._cur().symbol
+        self._advance()
 
-    def parse_assignment(self) -> AssignStmt:
-        """Parse a variable assignment: <id> = <expr> ;"""
-        # Parse identifier
-        ident_token = self.consume('IDENTIFIER')
-        if not ident_token:
+        right = self._parse_expression()
+        if right is None:
             return None
 
-        # Consume equals sign
-        self.consume('OPERATOR', '=')
+        return Condition(left, op, right)
 
-        # Parse expression
-        expr = self.parse_expression()
-
-        # Consume semicolon
-        self.consume('SEMICOLON', ';')
-
-        return AssignStmt(ident_token.value, expr)
-
-    def parse_expression(self) -> Optional[Expression]:
-        """Parse an expression: <expr> + <term> | <term>"""
-        # Parse first term
-        left = self.parse_term()
-        if not left:
+    # --- Expression : <term> { <binop> <term> } ---
+    def _parse_expression(self) -> Optional[Expression]:
+        left = self._parse_term()
+        if left is None:
             return None
 
-        # Check for additional terms (addition and other binary operators)
-        while self.expect('OPERATOR', '+') or self.expect('OPERATOR', '-') or \
-                self.expect('OPERATOR', '*') or self.expect('OPERATOR', '/'):
-            op_token = None
-            if self.expect('OPERATOR', '+'):
-                op_token = self.consume('OPERATOR', '+')
-            elif self.expect('OPERATOR', '-'):
-                op_token = self.consume('OPERATOR', '-')
-            elif self.expect('OPERATOR', '*'):
-                op_token = self.consume('OPERATOR', '*')
-            elif self.expect('OPERATOR', '/'):
-                op_token = self.consume('OPERATOR', '/')
-
-            if not op_token:
+        while self._is_binop():
+            op = self._cur().symbol
+            self._advance()
+            right = self._parse_term()
+            if right is None:
                 break
-
-            right = self.parse_term()
-            if not right:
-                break
-            left = BinaryOp(op_token.value, left, right)
+            left = BinaryOp(op, left, right)
 
         return left
 
-    def parse_term(self) -> Optional[Expression]:
-        """Parse a term: <id> | <number> | <string_lit> | <unary_expr>"""
-        token = self.peek()
+    # --- Term : id | number | string | bool | ( expr ) | - number ---
+    def _parse_term(self) -> Optional[Expression]:
+        t = self._cur()
 
-        # Check for unary minus (negative number)
-        if token.type == 'OPERATOR' and token.value == '-':
-            # Check if next token is a number
-            next_token = self.peek_next()
-            if next_token and next_token.type == 'NUMBER':
-                # Consume the minus operator
-                self.advance()
-                # Consume the number
-                num_token = self.peek()
-                self.advance()
-                # Create a negative number
-                return Number(-int(num_token.value))
+        if t is None:
+            self._error("Expression attendue, fin de fichier atteinte")
+            return None
+
+        # Négatif unaire : - <number>
+        if isinstance(t, Operator) and t.symbol == '-':
+            next_t = self._peek_next()
+            if isinstance(next_t, LexNumber):
+                self._advance()       # consomme '-'
+                num = self._advance() # consomme le nombre
+                return Number(-num.value)
             else:
-                # This is a binary operator, not unary
-                # Let it be handled by the expression parser
-                self.error(f"Expected number after unary minus, got {next_token.type if next_token else 'EOF'}")
-                self.advance()
+                self._error(f"Nombre attendu après '-', obtenu {next_t}")
+                self._advance()
                 return None
 
-        if token.type == 'IDENTIFIER':
-            self.advance()
-            return Identifier(token.value)
-        elif token.type == 'NUMBER':
-            self.advance()
-            return Number(int(token.value))
-        elif token.type == 'STRING':
-            self.advance()
-            return StringLiteral(token.value)
-        else:
-            self.error(f"Expected identifier, number, or string, got {token.type}({token.value})")
-            self.advance()
-            return None
+        # Expression parenthésée : ( expr )
+        if isinstance(t, Operator) and t.symbol == '(':
+            self._advance()  # consomme '('
+            expr = self._parse_expression()
+            if not self._consume_operator(')'):
+                self._synchronize()
+            return expr
+
+        if isinstance(t, LexIdent):
+            self._advance()
+            return Identifier(t.name)
+
+        if isinstance(t, LexNumber):
+            self._advance()
+            return Number(t.value)
+
+        if isinstance(t, LexString):
+            self._advance()
+            return StringLiteral(t.value)
+
+        if isinstance(t, BoolLiteral):
+            self._advance()
+            return BoolLiteralNode(t.value)
+
+        # Tokens structurels : jamais une expression valide
+        if isinstance(t, Operator) and t.symbol in ('}', '{', ';', ')'):
+            self._error(
+                f"Expression attendue à la ligne {t.line}, col {t.col} "
+                f"— '{t.symbol}' n'est pas une valeur valide"
+            )
+            return None  # NE PAS consommer le token structurel
+
+        self._error(f"Terme inattendu : {t}")
+        self._advance()
+        return None

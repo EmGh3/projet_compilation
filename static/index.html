@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CompilIDE</title>
+
+<!-- CodeMirror -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+
+<style>
+/* ============================================================
+   DESIGN : Industriel / terminal sombre — police monospace
+   Palette : fond charbon, accents ambre et cyan électrique
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap');
+
+:root {
+  --bg0:        #0d0f0f;
+  --bg1:        #131616;
+  --bg2:        #191d1d;
+  --bg3:        #1f2424;
+  --border:     #2a3030;
+  --border2:    #354040;
+  --amber:      #f0a500;
+  --amber-dim:  #a07010;
+  --cyan:       #00d4c8;
+  --cyan-dim:   #007a74;
+  --green:      #3ddc84;
+  --red:        #ff5555;
+  --yellow:     #f4d03f;
+  --text:       #c8d0cf;
+  --text-dim:   #6a7878;
+  --text-bright:#e8f0ef;
+  --mono:       'JetBrains Mono', monospace;
+  --display:    'Orbitron', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg0);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* ---- TOPBAR ---- */
+#topbar {
+  height: 48px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 16px;
+  position: relative;
+  z-index: 10;
+}
+
+#logo {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  color: var(--amber);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#logo-icon {
+  width: 26px; height: 26px;
+  background: var(--amber);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  display: flex; align-items: center; justify-content: center;
+}
+#logo-icon span {
+  font-size: 11px; font-weight: 900; color: var(--bg0);
+}
+
+.sep { width: 1px; height: 24px; background: var(--border2); }
+
+#btn-compile {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--amber);
+  color: var(--bg0);
+  border: none; cursor: pointer;
+  font-family: var(--display);
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 2px;
+  padding: 8px 20px;
+  text-transform: uppercase;
+  clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%);
+  transition: background .15s, transform .1s;
+}
+#btn-compile:hover  { background: #ffc030; }
+#btn-compile:active { transform: scale(.97); }
+#btn-compile svg    { width: 14px; height: 14px; }
+
+#btn-clear {
+  display: flex; align-items: center; gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border2);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 7px 14px;
+  transition: border-color .15s, color .15s;
+}
+#btn-clear:hover { border-color: var(--red); color: var(--red); }
+
+#status-pill {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text-dim);
+  letter-spacing: 1px;
+}
+#status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-dim);
+  transition: background .3s;
+  box-shadow: 0 0 0 0 transparent;
+}
+#status-dot.ok      { background: var(--green);  box-shadow: 0 0 8px var(--green); }
+#status-dot.error   { background: var(--red);    box-shadow: 0 0 8px var(--red); }
+#status-dot.loading { background: var(--amber);  box-shadow: 0 0 8px var(--amber); animation: pulse 1s infinite; }
+
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.3 } }
+
+/* Keyboard hint */
+#kbd-hint { font-size: 10px; color: var(--text-dim); }
+.kbd { background: var(--bg3); border: 1px solid var(--border2); padding: 1px 5px; border-radius: 3px; }
+
+/* ---- MAIN LAYOUT ---- */
+#main {
+  display: flex;
+  height: calc(100vh - 48px);
+}
+
+/* ---- LEFT : EDITOR PANE ---- */
+#editor-pane {
+  width: 48%;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg1);
+}
+
+.pane-header {
+  height: 34px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center;
+  padding: 0 16px; gap: 10px;
+  font-size: 10px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--text-dim);
+}
+.pane-header .dot { width: 6px; height: 6px; border-radius: 50%; }
+.dot-amber { background: var(--amber); }
+.dot-cyan  { background: var(--cyan); }
+.dot-green { background: var(--green); }
+
+#editor-wrap { flex: 1; overflow: hidden; position: relative; }
+
+/* CodeMirror override */
+.CodeMirror {
+  height: 100% !important;
+  background: var(--bg1) !important;
+  color: #c8d8d0 !important;
+  font-family: var(--mono) !important;
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+}
+.CodeMirror-scroll { height: 100% !important; }
+.CodeMirror-gutters { background: var(--bg2) !important; border-right: 1px solid var(--border) !important; }
+.CodeMirror-linenumber { color: var(--text-dim) !important; padding: 0 10px !important; }
+.CodeMirror-activeline-background { background: rgba(255,255,255,.025) !important; }
+.CodeMirror-cursor { border-left: 2px solid var(--amber) !important; }
+.CodeMirror-selected { background: rgba(240,165,0,.15) !important; }
+.CodeMirror-matchingbracket { color: var(--amber) !important; background: rgba(240,165,0,.2) !important; }
+
+/* Syntax coloring via inline mode */
+.cm-keyword  { color: #e06c75 !important; font-weight: 600; }
+.cm-def      { color: var(--cyan) !important; }
+.cm-variable { color: #c8d8d0 !important; }
+.cm-number   { color: #d19a66 !important; }
+.cm-string   { color: #98c379 !important; }
+.cm-comment  { color: var(--text-dim) !important; font-style: italic; }
+.cm-operator { color: var(--amber) !important; }
+.cm-bracket  { color: #abb2bf !important; }
+
+/* Error squiggles */
+.cm-error-line {
+  background: rgba(255, 85, 85, .08) !important;
+  border-bottom: 2px wavy var(--red);
+}
+
+/* ---- RIGHT : RESULTS PANE ---- */
+#results-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg0);
+}
+
+/* Tab bar */
+#tabs {
+  height: 34px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-end;
+  padding: 0 8px;
+  gap: 2px;
+}
+.tab {
+  height: 30px;
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 16px;
+  font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+  white-space: nowrap;
+}
+.tab:hover    { color: var(--text); }
+.tab.active   { color: var(--text-bright); border-bottom-color: var(--amber); }
+.tab .badge   {
+  background: var(--bg3); border: 1px solid var(--border2);
+  color: var(--text-dim); font-size: 9px;
+  padding: 1px 5px; min-width: 18px; text-align: center;
+}
+.tab .badge.has-error  { background: rgba(255,85,85,.2); border-color: var(--red); color: var(--red); }
+.tab .badge.has-ok     { background: rgba(61,220,132,.1); border-color: var(--green); color: var(--green); }
+.tab .badge.has-warn   { background: rgba(244,208,63,.1); border-color: var(--yellow); color: var(--yellow); }
+
+/* Tab panels */
+#panels { flex: 1; overflow: hidden; position: relative; }
+.panel  { display: none; height: 100%; overflow-y: auto; padding: 16px 20px; }
+.panel.active { display: block; }
+
+/* Scrollbar */
+.panel::-webkit-scrollbar      { width: 6px; }
+.panel::-webkit-scrollbar-track  { background: var(--bg1); }
+.panel::-webkit-scrollbar-thumb  { background: var(--border2); border-radius: 3px; }
+
+/* ---- EMPTY STATE ---- */
+#empty-state {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  height: 100%;
+  color: var(--text-dim); gap: 12px;
+}
+#empty-state .big { font-size: 48px; opacity: .2; }
+#empty-state p { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
+
+/* ---- TOKENS PANEL ---- */
+#token-grid {
+  display: grid;
+  grid-template-columns: 32px 1fr 90px 80px;
+  gap: 0;
+}
+.tg-header {
+  display: contents;
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim);
+}
+.tg-header > div {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  position: sticky; top: 0; z-index: 1;
+}
+.tg-row { display: contents; }
+.tg-row > div {
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(255,255,255,.03);
+  font-size: 12px;
+  transition: background .1s;
+}
+.tg-row:hover > div { background: rgba(255,255,255,.03); }
+.tg-idx  { color: var(--text-dim); text-align: right; }
+.tg-repr { color: var(--cyan); }
+.tg-type { color: var(--amber-dim); font-size: 10px; letter-spacing: 1px; }
+.tg-pos  { color: var(--text-dim); font-size: 11px; }
+
+/* ---- AST PANEL ---- */
+#ast-container {
+  width: 100%; height: 100%;
+  min-height: 400px;
+  overflow: auto;
+}
+#ast-container svg { display: block; }
+
+.ast-node {
+  cursor: pointer;
+}
+.ast-node circle {
+  stroke-width: 2;
+  transition: r .2s, stroke .2s;
+}
+.ast-node:hover circle { r: 18; }
+.ast-node text {
+  font-family: var(--mono);
+  font-size: 10px;
+  pointer-events: none;
+  user-select: none;
+}
+.ast-link {
+  fill: none;
+  stroke: var(--border2);
+  stroke-width: 1.5;
+}
+
+/* ---- SEMANTIC PANEL ---- */
+.sem-section { margin-bottom: 20px; }
+.sem-title {
+  font-size: 9px; letter-spacing: 3px; text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px; margin-bottom: 10px;
+}
+.symbol-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.symbol-table th {
+  text-align: left; padding: 5px 10px;
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-dim); background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.symbol-table td { padding: 5px 10px; border-bottom: 1px solid rgba(255,255,255,.03); }
+.symbol-table tr:hover td { background: rgba(255,255,255,.03); }
+.pill {
+  display: inline-block; padding: 1px 7px; border-radius: 2px;
+  font-size: 10px; letter-spacing: 1px;
+}
+.pill-int    { background: rgba(0,212,200,.1); color: var(--cyan); border: 1px solid var(--cyan-dim); }
+.pill-string { background: rgba(152,195,121,.1); color: #98c379; border: 1px solid #3d6b3a; }
+.pill-bool   { background: rgba(209,154,102,.1); color: #d19a66; border: 1px solid #6b4e2a; }
+.pill-yes    { background: rgba(61,220,132,.1);  color: var(--green); border: 1px solid #1a6b3a; }
+.pill-no     { background: rgba(255,85,85,.1);   color: var(--red);   border: 1px solid #6b2020; }
+
+/* ---- MESSAGE ITEMS (errors / warnings) ---- */
+.msg-list { display: flex; flex-direction: column; gap: 6px; }
+.msg-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 2px;
+  font-size: 12px; line-height: 1.5;
+}
+.msg-item.error   { background: rgba(255,85,85,.08);  border-left: 3px solid var(--red); }
+.msg-item.warning { background: rgba(244,208,63,.06); border-left: 3px solid var(--yellow); }
+.msg-item.ok      { background: rgba(61,220,132,.06); border-left: 3px solid var(--green); }
+.msg-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+.msg-text { color: var(--text); }
+
+/* ---- PHASE BADGE ---- */
+.phase-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.phase-badge {
+  font-family: var(--display);
+  font-size: 9px; letter-spacing: 2px; font-weight: 700;
+  padding: 4px 10px;
+  clip-path: polygon(6px 0%, 100% 0%, calc(100% - 6px) 100%, 0% 100%);
+}
+.phase-badge.ok    { background: var(--green);  color: var(--bg0); }
+.phase-badge.fail  { background: var(--red);    color: #fff; }
+.phase-badge.skip  { background: var(--bg3);    color: var(--text-dim); }
+.phase-label { font-size: 11px; letter-spacing: 1px; color: var(--text-dim); }
+.phase-count { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+
+/* ---- RESIZER ---- */
+#resizer {
+  width: 4px; background: var(--border);
+  cursor: col-resize; flex-shrink: 0;
+  transition: background .2s;
+}
+#resizer:hover, #resizer.dragging { background: var(--amber); }
+
+/* ---- LOADING OVERLAY ---- */
+#loading {
+  display: none;
+  position: absolute; inset: 0;
+  background: rgba(13,15,15,.7);
+  z-index: 100;
+  align-items: center; justify-content: center;
+  flex-direction: column; gap: 12px;
+}
+#loading.visible { display: flex; }
+.spinner {
+  width: 36px; height: 36px;
+  border: 3px solid var(--border2);
+  border-top-color: var(--amber);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- TOOLTIP ---- */
+.tooltip {
+  position: absolute; z-index: 999;
+  background: var(--bg3); border: 1px solid var(--border2);
+  color: var(--text); font-size: 11px;
+  padding: 6px 10px; pointer-events: none;
+  white-space: nowrap; max-width: 300px;
+  white-space: normal;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div id="topbar">
+  <div id="logo">
+    <div id="logo-icon"><span>C</span></div>
+    CompilIDE
+  </div>
+  <div class="sep"></div>
+  <button id="btn-compile">
+    <svg viewBox="0 0 16 16" fill="currentColor">
+      <path d="M3 2l10 6-10 6V2z"/>
+    </svg>
+    Compiler
+  </button>
+  <button id="btn-clear">✕ Effacer</button>
+  <div class="sep"></div>
+  <span id="kbd-hint"><span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> pour compiler</span>
+  <div id="status-pill">
+    <div id="status-dot"></div>
+    <span id="status-text">Prêt</span>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+
+  <!-- EDITOR -->
+  <div id="editor-pane">
+    <div class="pane-header">
+      <div class="dot dot-amber"></div>
+      Éditeur
+      <span style="margin-left:auto;font-size:10px;opacity:.5;" id="line-col">L1 C1</span>
+    </div>
+    <div id="editor-wrap">
+      <textarea id="editor"></textarea>
+      <div id="loading">
+        <div class="spinner"></div>
+        <span style="font-size:11px;letter-spacing:2px;color:var(--amber)">COMPILATION…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESIZER -->
+  <div id="resizer"></div>
+
+  <!-- RESULTS -->
+  <div id="results-pane">
+    <div id="tabs">
+      <div class="tab active" data-tab="tokens">
+        <span>① Tokens</span><span class="badge" id="badge-tokens">—</span>
+      </div>
+      <div class="tab" data-tab="ast">
+        <span>② AST</span><span class="badge" id="badge-ast">—</span>
+      </div>
+      <div class="tab" data-tab="semantic">
+        <span>③ Sémantique</span><span class="badge" id="badge-semantic">—</span>
+      </div>
+    </div>
+
+    <div id="panels">
+      <!-- TOKENS -->
+      <div class="panel active" id="panel-tokens">
+        <div id="empty-tokens">
+          <div id="empty-state">
+            <div class="big">{ }</div>
+            <p>Lance une compilation pour voir les tokens</p>
+          </div>
+        </div>
+        <div id="token-content" style="display:none"></div>
+      </div>
+
+      <!-- AST -->
+      <div class="panel" id="panel-ast">
+        <div id="empty-ast">
+          <div id="empty-state">
+            <div class="big">⬡</div>
+            <p>Lance une compilation pour voir l'AST</p>
+          </div>
+        </div>
+        <div id="ast-content" style="display:none;height:100%">
+          <div id="ast-container"></div>
+        </div>
+      </div>
+
+      <!-- SEMANTIC -->
+      <div class="panel" id="panel-semantic">
+        <div id="empty-semantic">
+          <div id="empty-state">
+            <div class="big">◈</div>
+            <p>Lance une compilation pour voir l'analyse sémantique</p>
+          </div>
+        </div>
+        <div id="semantic-content" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip" style="display:none"></div>
+
+<!-- D3 for AST -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+
+<script>
+// ============================================================
+// CodeMirror setup
+// ============================================================
+const DEFAULT_CODE = `// Exemple complet
+int compteur = 0;
+int total = 0;
+int max = 5;
+string statut = "en cours";
+bool actif = true;
+
+while (compteur < max) {
+    total = total + compteur;
+    compteur = compteur + 1;
+}
+
+if (total > 10) then {
+    statut = "grand";
+} else {
+    statut = "petit";
+}
+
+int a = 2;
+int b = 3;
+int c = (a + b) * (a - b);
+
+while (actif) {
+    actif = false;
+}
+`;
+
+const cm = CodeMirror.fromTextArea(document.getElementById('editor'), {
+  mode: 'text/x-csrc',
+  theme: 'default',
+  lineNumbers: true,
+  matchBrackets: true,
+  autoCloseBrackets: true,
+  styleActiveLine: true,
+  indentUnit: 4,
+  tabSize: 4,
+  indentWithTabs: false,
+  lineWrapping: false,
+  extraKeys: {
+    "Ctrl-Enter": () => compile(),
+    "Tab": cm => cm.execCommand("indentMore"),
+  }
+});
+cm.setValue(DEFAULT_CODE);
+cm.refresh();
+
+// Line/col indicator
+cm.on('cursorActivity', () => {
+  const c = cm.getCursor();
+  document.getElementById('line-col').textContent = `L${c.line+1} C${c.ch+1}`;
+});
+
+// ============================================================
+// Tabs
+// ============================================================
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'ast' && lastAst) renderAST(lastAst);
+  });
+});
+
+// ============================================================
+// Resizer
+// ============================================================
+const resizer = document.getElementById('resizer');
+const editorPane = document.getElementById('editor-pane');
+let isResizing = false;
+
+resizer.addEventListener('mousedown', e => {
+  isResizing = true;
+  resizer.classList.add('dragging');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+});
+document.addEventListener('mousemove', e => {
+  if (!isResizing) return;
+  const main = document.getElementById('main');
+  const rect = main.getBoundingClientRect();
+  const pct = Math.max(25, Math.min(70, (e.clientX - rect.left) / rect.width * 100));
+  editorPane.style.width = pct + '%';
+  cm.refresh();
+});
+document.addEventListener('mouseup', () => {
+  isResizing = false;
+  resizer.classList.remove('dragging');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+});
+
+// ============================================================
+// Clear error markers on editor
+// ============================================================
+let errorMarkers = [];
+function clearMarkers() {
+  errorMarkers.forEach(m => m.clear());
+  errorMarkers = [];
+  cm.eachLine(lh => cm.removeLineClass(lh, 'background', 'cm-error-line'));
+}
+
+function markLine(line) {
+  if (line > 0 && line <= cm.lineCount()) {
+    cm.addLineClass(line - 1, 'background', 'cm-error-line');
+  }
+}
+
+// ============================================================
+// Status pill
+// ============================================================
+function setStatus(state, text) {
+  const dot = document.getElementById('status-dot');
+  dot.className = '';
+  if (state) dot.classList.add(state);
+  document.getElementById('status-text').textContent = text;
+}
+
+// ============================================================
+// Compile
+// ============================================================
+let lastAst = null;
+
+async function compile() {
+  const code = cm.getValue();
+  if (!code.trim()) return;
+
+  clearMarkers();
+  setStatus('loading', 'Compilation…');
+  document.getElementById('loading').classList.add('visible');
+
+  const res = await fetch('/api/compile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code })
+  });
+  const data = await res.json();
+  renderResults(data);
+  document.getElementById('loading').classList.remove('visible');
+}
+
+document.getElementById('btn-compile').addEventListener('click', compile);
+document.getElementById('btn-clear').addEventListener('click', () => {
+  cm.setValue('');
+  clearResults();
+  setStatus('', 'Prêt');
+});
+
+// ============================================================
+// Render results
+// ============================================================
+function clearResults() {
+  const tabs = ['tokens', 'ast', 'semantic'];
+  tabs.forEach(tab => {
+    const empty = document.getElementById(`empty-${tab}`);
+    const content = document.getElementById(`${tab}-content`);
+    const badge = document.getElementById(`badge-${tab}`);
+    if (empty)   empty.style.display = '';
+    if (content) content.style.display = 'none';
+    if (badge)   { badge.className = 'badge'; badge.textContent = '—'; }
+  });
+  lastAst = null;
+}
+
+function renderResults(data) {
+  clearResults();
+  clearMarkers();
+
+  const lexOk  = data.lexer.ok;
+  const parOk  = data.parser.ok;
+  const semOk  = data.semantic.ok;
+  const allOk  = lexOk && parOk && semOk;
+  const hasWarn = (data.semantic.warnings || []).length > 0;
+
+  if (allOk)        setStatus('ok',    'Compilation réussie');
+  else if (!lexOk)  setStatus('error', 'Erreur lexicale');
+  else if (!parOk)  setStatus('error', 'Erreur syntaxique');
+  else              setStatus('error', 'Erreur sémantique');
+
+  renderTokens(data.lexer);
+  renderASTPrepare(data.parser);
+  renderSemantic(data);
+
+  // Error markers on editor
+  const allErrors = [
+    ...(data.parser.errors || []),
+    ...(data.semantic.errors || []),
+  ];
+  allErrors.forEach(msg => {
+    const m = msg.match(/ligne (\d+)/);
+    if (m) markLine(parseInt(m[1]));
+  });
+  if (data.lexer.error) {
+    const m = data.lexer.error.match(/ligne (\d+)/);
+    if (m) markLine(parseInt(m[1]));
+  }
+}
+
+// ============================================================
+// Tokens
+// ============================================================
+function renderTokens(lexer) {
+  const wrap = document.getElementById('token-content');
+  const empty = document.getElementById('empty-tokens');
+  const badge = document.getElementById('badge-tokens');
+
+  if (!lexer.ok) {
+    badge.textContent = '✗';
+    badge.className = 'badge has-error';
+    wrap.innerHTML = `<div class="msg-list">
+      <div class="msg-item error"><span class="msg-icon">✗</span><span class="msg-text">${escHtml(lexer.error)}</span></div>
+    </div>`;
+    empty.style.display = 'none';
+    wrap.style.display = '';
+    return;
+  }
+
+  badge.textContent = lexer.tokens.length;
+  badge.className = 'badge has-ok';
+
+  const rows = lexer.tokens.map(t => `
+    <div class="tg-row">
+      <div class="tg-idx">${t.index}</div>
+      <div class="tg-repr">${escHtml(t.repr)}</div>
+      <div class="tg-type">${t.type}</div>
+      <div class="tg-pos">L${t.line} C${t.col}</div>
+    </div>
+  `).join('');
+
+  wrap.innerHTML = `
+    <div id="token-grid">
+      <div class="tg-header">
+        <div>#</div><div>Token</div><div>Type</div><div>Position</div>
+      </div>
+      ${rows}
+    </div>`;
+  empty.style.display = 'none';
+  wrap.style.display = '';
+}
+
+// ============================================================
+// AST
+// ============================================================
+function renderASTPrepare(parser) {
+  const badge = document.getElementById('badge-ast');
+  if (!parser.ok) {
+    badge.textContent = parser.errors.length + ' err';
+    badge.className = 'badge has-error';
+    const empty = document.getElementById('empty-ast');
+    const content = document.getElementById('ast-content');
+    content.innerHTML = `<div class="msg-list" style="padding:16px">` +
+      parser.errors.map(e => `<div class="msg-item error"><span class="msg-icon">✗</span><span class="msg-text">${escHtml(e)}</span></div>`).join('') +
+      `</div>`;
+    empty.style.display = 'none';
+    content.style.display = '';
+    lastAst = null;
+    return;
+  }
+  badge.textContent = 'OK';
+  badge.className = 'badge has-ok';
+  lastAst = parser.ast;
+
+  // Only render if AST tab is active
+  if (document.querySelector('.tab[data-tab="ast"]').classList.contains('active')) {
+    renderAST(lastAst);
+  } else {
+    document.getElementById('empty-ast').style.display = 'none';
+    document.getElementById('ast-content').style.display = '';
+  }
+}
+
+function renderAST(root) {
+  if (!root) return;
+  const container = document.getElementById('ast-container');
+  container.innerHTML = '';
+
+  document.getElementById('empty-ast').style.display = 'none';
+  document.getElementById('ast-content').style.display = '';
+
+  const W = container.parentElement.clientWidth  || 700;
+  const NODE_H = 70;
+
+  // Build d3 hierarchy
+  const hierarchy = d3.hierarchy(root, d => d.children);
+  const nodeCount = hierarchy.descendants().length;
+  const H = Math.max(400, (hierarchy.height + 1) * NODE_H + 60);
+
+  const treeLayout = d3.tree().size([W - 60, H - 60]);
+  treeLayout(hierarchy);
+
+  const svg = d3.select(container).append('svg')
+    .attr('width', W)
+    .attr('height', H);
+
+  const g = svg.append('g').attr('transform', 'translate(30,40)');
+
+  // Links
+  g.selectAll('.ast-link')
+    .data(hierarchy.links())
+    .join('path')
+    .attr('class', 'ast-link')
+    .attr('d', d3.linkVertical().x(d => d.x).y(d => d.y));
+
+  // Nodes
+  const node = g.selectAll('.ast-node')
+    .data(hierarchy.descendants())
+    .join('g')
+    .attr('class', 'ast-node')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+
+  // Color by type
+  const typeColor = {
+    'Program':     '#f0a500',
+    'Déclaration': '#00d4c8',
+    'Assignation': '#3ddc84',
+    'If':          '#e06c75',
+    'While':       '#d19a66',
+    'BinaryOp':    '#c678dd',
+    'Condition':   '#56b6c2',
+    'Nombre':      '#98c379',
+    'String':      '#98c379',
+    'Bool':        '#d19a66',
+    'Identifiant': '#abb2bf',
+  };
+
+  node.append('circle')
+    .attr('r', 14)
+    .attr('fill', d => (typeColor[d.data.type] || '#4a5568') + '22')
+    .attr('stroke', d => typeColor[d.data.type] || '#4a5568');
+
+  // Type label (small, above)
+  node.append('text')
+    .attr('y', -20).attr('text-anchor', 'middle')
+    .attr('fill', d => typeColor[d.data.type] || '#6a7878')
+    .attr('font-size', '9px')
+    .attr('letter-spacing', '1px')
+    .text(d => d.data.type.toUpperCase());
+
+  // Main label
+  node.append('text')
+    .attr('y', 4).attr('text-anchor', 'middle')
+    .attr('fill', '#e8f0ef')
+    .attr('font-size', '11px')
+    .attr('font-weight', '600')
+    .text(d => {
+      const l = d.data.label || '';
+      return l.length > 14 ? l.slice(0, 13) + '…' : l;
+    });
+
+  // Tooltip
+  const tooltip = document.getElementById('tooltip');
+  node.on('mousemove', (event, d) => {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (event.pageX + 14) + 'px';
+    tooltip.style.top  = (event.pageY - 10) + 'px';
+    tooltip.textContent = `${d.data.type}: ${d.data.label || ''}`;
+  }).on('mouseleave', () => {
+    tooltip.style.display = 'none';
+  });
+}
+
+// ============================================================
+// Semantic
+// ============================================================
+function renderSemantic(data) {
+  const wrap = document.getElementById('semantic-content');
+  const empty = document.getElementById('empty-semantic');
+  const badge = document.getElementById('badge-semantic');
+
+  if (!data.lexer.ok || !data.parser.ok) {
+    badge.textContent = '—'; badge.className = 'badge';
+    return;
+  }
+
+  const errors   = data.semantic.errors   || [];
+  const warnings = data.semantic.warnings || [];
+  const symbols  = data.semantic.symbols  || [];
+  const ok       = data.semantic.ok;
+
+  if (ok && warnings.length === 0) {
+    badge.textContent = '✓'; badge.className = 'badge has-ok';
+  } else if (!ok) {
+    badge.textContent = errors.length + ' err'; badge.className = 'badge has-error';
+  } else {
+    badge.textContent = warnings.length + ' ⚠'; badge.className = 'badge has-warn';
+  }
+
+  // Phases summary
+  let html = `
+    <div class="phase-row">
+      <div class="phase-badge ok">Phase 1</div>
+      <div class="phase-label">Analyse Lexicale</div>
+      <div class="phase-count">${data.lexer.tokens.length} tokens</div>
+    </div>
+    <div class="phase-row">
+      <div class="phase-badge ok">Phase 2</div>
+      <div class="phase-label">Analyse Syntaxique</div>
+      <div class="phase-count">AST construit</div>
+    </div>
+    <div class="phase-row">
+      <div class="phase-badge ${ok ? 'ok' : 'fail'}">Phase 3</div>
+      <div class="phase-label">Analyse Sémantique</div>
+      <div class="phase-count">${errors.length} erreur(s), ${warnings.length} avertissement(s)</div>
+    </div>
+  `;
+
+  // Errors
+  if (errors.length) {
+    html += `<div class="sem-section"><div class="sem-title">Erreurs</div><div class="msg-list">`;
+    errors.forEach(e => {
+      html += `<div class="msg-item error"><span class="msg-icon">✗</span><span class="msg-text">${escHtml(e)}</span></div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  // Warnings
+  if (warnings.length) {
+    html += `<div class="sem-section"><div class="sem-title">Avertissements</div><div class="msg-list">`;
+    warnings.forEach(w => {
+      html += `<div class="msg-item warning"><span class="msg-icon">⚠</span><span class="msg-text">${escHtml(w)}</span></div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  if (ok && !errors.length && !warnings.length) {
+    html += `<div class="msg-list"><div class="msg-item ok"><span class="msg-icon">✓</span><span class="msg-text">Aucune erreur sémantique détectée</span></div></div>`;
+  }
+
+  // Symbol table
+  if (symbols.length) {
+    html += `<div class="sem-section" style="margin-top:20px"><div class="sem-title">Table des symboles</div>
+    <table class="symbol-table">
+      <tr><th>Variable</th><th>Type</th><th>Portée</th><th>Init.</th><th>Utilisée</th></tr>`;
+    symbols.forEach(s => {
+      const tp = `pill-${s.type}`;
+      const initPill = s.initialized
+        ? `<span class="pill pill-yes">oui</span>`
+        : `<span class="pill pill-no">non</span>`;
+      const usedPill = s.used
+        ? `<span class="pill pill-yes">oui</span>`
+        : `<span class="pill pill-no">non</span>`;
+      html += `<tr>
+        <td style="color:var(--cyan)">${escHtml(s.name)}</td>
+        <td><span class="pill ${tp}">${s.type}</span></td>
+        <td style="color:var(--text-dim)">${s.scope}</td>
+        <td>${initPill}</td>
+        <td>${usedPill}</td>
+      </tr>`;
+    });
+    html += `</table></div>`;
+  }
+
+  wrap.innerHTML = html;
+  empty.style.display = 'none';
+  wrap.style.display = '';
+}
+
+// ============================================================
+// Utils
+// ============================================================
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Auto-compile on load after short delay
+setTimeout(() => compile(), 300);
+</script>
+</body>
+</html>

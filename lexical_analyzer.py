@@ -1,18 +1,40 @@
+"""
+Lexical Analyzer — Phase 1 du compilateur
+
+Améliorations apportées :
+  - Chaque token porte son numéro de ligne (line) et sa colonne (col)
+  - Attribut token_type explicite sur chaque classe (plus de parsing par str())
+  - Support des commentaires // (ligne) et /* ... */ (bloc)
+  - Nouveaux mots-clés : while, bool
+  - Nouveaux littéraux : true, false
+  - Erreurs lexicales avec position précise (ligne + colonne)
+"""
+
 import re
-from typing import List, Tuple, Union
-from collections import namedtuple
+from typing import List, Tuple
 
 
-# Token types
+# ---------------------------------------------------------------------------
+# Classes de tokens
+# ---------------------------------------------------------------------------
+
 class Token:
-    """Base class for all tokens"""
+    """Classe de base pour tous les tokens."""
+    token_type: str = "TOKEN"
+
+    def __init__(self, line: int = 0, col: int = 0):
+        self.line = line
+        self.col = col
 
     def __repr__(self):
         return str(self)
 
 
 class Keyword(Token):
-    def __init__(self, value: str):
+    token_type = "KEYWORD"
+
+    def __init__(self, value: str, line: int = 0, col: int = 0):
+        super().__init__(line, col)
         self.value = value
 
     def __str__(self):
@@ -23,7 +45,10 @@ class Keyword(Token):
 
 
 class Identifier(Token):
-    def __init__(self, name: str):
+    token_type = "IDENTIFIER"
+
+    def __init__(self, name: str, line: int = 0, col: int = 0):
+        super().__init__(line, col)
         self.name = name
 
     def __str__(self):
@@ -34,7 +59,10 @@ class Identifier(Token):
 
 
 class Number(Token):
-    def __init__(self, value: int):
+    token_type = "NUMBER"
+
+    def __init__(self, value: int, line: int = 0, col: int = 0):
+        super().__init__(line, col)
         self.value = value
 
     def __str__(self):
@@ -45,7 +73,10 @@ class Number(Token):
 
 
 class Operator(Token):
-    def __init__(self, symbol: str):
+    token_type = "OPERATOR"
+
+    def __init__(self, symbol: str, line: int = 0, col: int = 0):
+        super().__init__(line, col)
         self.symbol = symbol
 
     def __str__(self):
@@ -56,9 +87,10 @@ class Operator(Token):
 
 
 class StringLiteral(Token):
-    """Token for string literals (anything between double quotes)"""
+    token_type = "STRING"
 
-    def __init__(self, value: str):
+    def __init__(self, value: str, line: int = 0, col: int = 0):
+        super().__init__(line, col)
         self.value = value
 
     def __str__(self):
@@ -68,163 +100,116 @@ class StringLiteral(Token):
         return isinstance(other, StringLiteral) and self.value == other.value
 
 
+class BoolLiteral(Token):
+    """Token pour les littéraux booléens : true / false."""
+    token_type = "BOOL"
+
+    def __init__(self, value: bool, line: int = 0, col: int = 0):
+        super().__init__(line, col)
+        self.value = value
+
+    def __str__(self):
+        return f"BOOL({'true' if self.value else 'false'})"
+
+    def __eq__(self, other):
+        return isinstance(other, BoolLiteral) and self.value == other.value
+
+
+class LexicalError(Exception):
+    """Erreur lexicale avec position précise."""
+
+    def __init__(self, message: str, line: int, col: int):
+        super().__init__(f"Erreur lexicale à la ligne {line}, col {col} : {message}")
+        self.lex_line = line
+        self.lex_col = col
+
+
+# ---------------------------------------------------------------------------
+# Lexer
+# ---------------------------------------------------------------------------
+
 class Lexer:
-    """Lexical analyzer for the custom language"""
+    """
+    Analyseur lexical.
+
+    Mots-clés supportés  : if, then, else, while, int, string, bool
+    Littéraux booléens   : true, false
+    Commentaires         : // ... fin de ligne  |  /* ... */
+    """
+
+    KEYWORDS = {'if', 'then', 'else', 'while', 'int', 'string', 'bool'}
+    BOOL_LITERALS = {'true', 'false'}
+
+    # Patterns dans l'ordre de priorité (IMPORTANT : block avant line)
+    _TOKEN_PATTERNS: List[Tuple[str, str]] = [
+        ('BLOCK_COMMENT', r'/\*.*?\*/'),
+        ('LINE_COMMENT',  r'//[^\n]*'),
+        ('STRING',        r'"[^"]*"'),
+        ('NUMBER',        r'\d+'),
+        ('OPERATOR',      r'>=|<=|==|!=|[+\-*/=><{}();,!]'),
+        ('WORD',          r'[a-zA-Z_][a-zA-Z0-9_]*'),
+        ('NEWLINE',       r'\n'),
+        ('WHITESPACE',    r'[ \t\r]+'),
+        ('UNKNOWN',       r'.'),
+    ]
 
     def __init__(self):
-        # Define patterns for different token types
-        self.token_patterns = [
-            ('STRING', r'"[^"]*"'),  # String literals (must be before other patterns)
-            ('KEYWORD', r'\b(if|then|else|int|string)\b'),  # Keywords
-            ('IDENTIFIER', r'[a-zA-Z_][a-zA-Z0-9_]*'),  # Identifiers
-            ('NUMBER', r'\d+'),  # Integer literals
-            # Multi-character operators first
-            ('OPERATOR', r'>=|<=|==|!=|[+\-*/=><{}();,!]'),  # Operators and symbols
-            ('WHITESPACE', r'[ \t]+'),  # Spaces and tabs
-            ('NEWLINE', r'\n'),  # Line breaks
-        ]
+        combined = '|'.join(
+            f'(?P<{name}>{pat})' for name, pat in self._TOKEN_PATTERNS
+        )
+        self._re = re.compile(combined, re.DOTALL)
 
-        # Compile the combined regular expression
-        self.token_re = re.compile('|'.join(f'(?P<{name}>{pattern})'
-                                            for name, pattern in self.token_patterns))
+    def tokenize(self, source_code: str) -> List[Token]:
+        """
+        Tokenise le code source complet.
+        Retourne la liste des tokens (espaces et commentaires ignorés).
+        Lève LexicalError sur tout caractère non reconnu.
+        """
+        tokens: List[Token] = []
+        line = 1
+        line_start = 0
 
-        # Set of keywords for identification
-        self.keywords = {'if', 'then', 'else', 'int', 'string'}
+        for m in self._re.finditer(source_code):
+            kind = m.lastgroup
+            value = m.group()
+            col = m.start() - line_start + 1
 
-        # Set of operators/symbols
-        self.operators = {'+', '-', '*', '/', '=', '>', '<', '>=', '<=', '==', '!=',
-                          '{', '}', '(', ')', ';', ',', '!'}
+            if kind == 'NEWLINE':
+                line += 1
+                line_start = m.end()
 
-    def tokenize_line(self, line: str) -> List[Token]:
-        """Tokenize a single line of source code"""
-        tokens = []
+            elif kind in ('WHITESPACE', 'LINE_COMMENT'):
+                pass  # ignoré
 
-        # Remove trailing newline if present
-        line = line.rstrip('\n')
+            elif kind == 'BLOCK_COMMENT':
+                # Compter les sauts de ligne à l'intérieur du commentaire
+                nl_count = value.count('\n')
+                if nl_count:
+                    line += nl_count
+                    line_start = m.start() + value.rfind('\n') + 1
 
-        # Find all tokens in the line
-        for match in self.token_re.finditer(line):
-            token_type = match.lastgroup
-            token_value = match.group()
+            elif kind == 'UNKNOWN':
+                raise LexicalError(f"Caractère inconnu '{value}'", line, col)
 
-            # Skip whitespace
-            if token_type == 'WHITESPACE':
-                continue
+            elif kind == 'STRING':
+                tokens.append(StringLiteral(value[1:-1], line, col))
 
-            # Create appropriate token object
-            if token_type == 'STRING':
-                # Remove the surrounding quotes for the value
-                str_value = token_value[1:-1]  # Remove leading and trailing "
-                tokens.append(StringLiteral(str_value))
-            elif token_type == 'KEYWORD':
-                tokens.append(Keyword(token_value))
-            elif token_type == 'IDENTIFIER':
-                # Check if it's actually a keyword
-                if token_value in self.keywords:
-                    tokens.append(Keyword(token_value))
+            elif kind == 'NUMBER':
+                tokens.append(Number(int(value), line, col))
+
+            elif kind == 'OPERATOR':
+                tokens.append(Operator(value, line, col))
+
+            elif kind == 'WORD':
+                if value in self.KEYWORDS:
+                    tokens.append(Keyword(value, line, col))
+                elif value in self.BOOL_LITERALS:
+                    tokens.append(BoolLiteral(value == 'true', line, col))
                 else:
-                    tokens.append(Identifier(token_value))
-            elif token_type == 'NUMBER':
-                tokens.append(Number(int(token_value)))
-            elif token_type == 'OPERATOR':
-                tokens.append(Operator(token_value))
+                    tokens.append(Identifier(value, line, col))
 
         return tokens
 
-    def tokenize(self, source_code: str) -> List[Token]:
-        """Tokenize entire source code"""
-        all_tokens = []
-
-        # Split source code into lines
-        lines = source_code.split('\n')
-
-        for line in lines:
-            # Skip empty lines
-            if not line.strip():
-                continue
-
-            # Tokenize the line
-            line_tokens = self.tokenize_line(line)
-            all_tokens.extend(line_tokens)
-
-        return all_tokens
-
     def format_tokens(self, tokens: List[Token]) -> str:
-        """Format tokens as a string representation"""
-        return '[' + ', '.join(str(token) for token in tokens) + ']'
-
-
-def test_lexer():
-    """Test the lexer with string literals and multi-character operators"""
-    print("Testing Lexer with String Literals")
-    print("=" * 60)
-
-    lexer = Lexer()
-
-    test_cases = [
-        # String literals
-        'name = "Alice";',
-        'greeting = "Hello World";',
-        'message = "Hello" + " World";',
-
-        # Mixed with operators
-        'x == 5;',
-        'y != 10;',
-
-        # If statements with strings
-        'if (name == "Alice") then { greeting = "Hi"; }',
-
-        # Complex expressions
-        'result = (x == y) != (a == b);',
-
-        # Strings with special characters
-        'path = "C:\\Users\\Name";',
-        'empty = "";',
-
-        # Numbers in strings should not be tokenized as numbers
-        'code = "12345";',
-    ]
-
-    for i, test_case in enumerate(test_cases, 1):
-        print(f"\nTest Case {i}:")
-        print(f"Input: {repr(test_case)}")
-        tokens = lexer.tokenize(test_case)
-        output = lexer.format_tokens(tokens)
-        print(f"Output: {output}")
-
-
-def interactive_mode():
-    """Interactive mode for testing the lexer"""
-    print("Lexical Analyzer Interactive Mode")
-    print("-" * 50)
-
-    lexer = Lexer()
-
-    while True:
-        try:
-            print("\nEnter code or type 'q' to exit: ", end="")
-            user_input = input()
-
-            if user_input.lower() == 'q':
-                print("Exiting...")
-                break
-
-            if not user_input.strip():
-                continue
-
-            tokens = lexer.tokenize(user_input)
-            output = lexer.format_tokens(tokens)
-            print(f"Tokens: {output}")
-
-        except EOFError:
-            break
-        except Exception as e:
-            print(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    # Run tests first
-    test_lexer()
-    print("\n" + "=" * 60)
-    # Then enter interactive mode
-    interactive_mode()
+        """Formate la liste de tokens en une seule chaîne lisible."""
+        return '[' + ', '.join(str(t) for t in tokens) + ']'

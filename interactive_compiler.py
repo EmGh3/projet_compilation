@@ -1,230 +1,322 @@
 """
-An interactive program that performs lexical analysis, syntax analysis,
-and semantic analysis on user input.
+Interactive Compiler — Frontend interactif du compilateur
+
+Améliorations apportées :
+  - Affichage des erreurs avec numéros de ligne et colonne
+  - Erreurs lexicales capturées proprement
+  - Résumé clair des trois phases
+  - Option pour afficher ou masquer les tokens
+  - Exemple de programmes intégrés pour démonstration
 """
 
-from typing import Optional
-from lexical_analyzer import Lexer
+import sys
+from lexical_analyzer import Lexer, LexicalError
 from syntax_analyzer import RecursiveDescentParser, Program
 from semantic_analyzer import SemanticAnalyzer
-import sys
 
+
+# ---------------------------------------------------------------------------
+# Exemples intégrés
+# ---------------------------------------------------------------------------
+
+EXAMPLES = {
+    "1": (
+        "Déclarations et arithmétique",
+        """\
+int x = 10;
+int y = 3;
+int result = x + y;
+""",
+    ),
+    "2": (
+        "If / else avec comparaison de chaînes",
+        """\
+string nom = "Alice";
+string message;
+if (nom == "Alice") then {
+    message = "Bonjour Alice !";
+} else {
+    message = "Qui es-tu ?";
+}
+""",
+    ),
+    "3": (
+        "Boucle while",
+        """\
+int compteur = 0;
+int total = 0;
+while (compteur < 5) {
+    total = total + compteur;
+    compteur = compteur + 1;
+}
+""",
+    ),
+    "4": (
+        "Variable non initialisée (avertissement)",
+        """\
+int a;
+int b = a + 1;
+""",
+    ),
+    "5": (
+        "Erreur de type",
+        """\
+int x = 5;
+string s = "hello";
+x = s;
+""",
+    ),
+    "6": (
+        "Expressions parenthésées",
+        """\
+int a = 2;
+int b = 3;
+int c = (a + b) * (a - b);
+""",
+    ),
+    "7": (
+        "Booléens et comparaison",
+        """\
+bool actif = true;
+int score = 42;
+if (score > 40) then {
+    actif = false;
+}
+""",
+    ),
+    "8": (
+        "Commentaires dans le code",
+        """\
+// Calcul du maximum de deux entiers
+int a = 10;
+int b = 20;
+int max = a;
+
+/* Si b est plus grand, on prend b */
+if (b > a) then {
+    max = b;
+}
+""",
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Compilateur interactif
+# ---------------------------------------------------------------------------
 
 class InteractiveCompiler:
-    """Interactive compiler that performs all three analysis phases"""
 
     def __init__(self):
         self.lexer = Lexer()
+        self.show_tokens = True
 
+    # ------------------------------------------------------------------
     def print_banner(self):
-        """Print welcome banner"""
-        print("=" * 80)
-        print(" " * 20 + "INTERACTIVE COMPILER FRONTEND")
-        print("=" * 80)
-        print("\nThis compiler performs three phases of analysis:")
-        print("  1. Lexical Analysis  - Tokenizes the input")
-        print("  2. Syntax Analysis   - Builds Abstract Syntax Tree (AST)")
-        print("  3. Semantic Analysis - Type checking and scope resolution")
-        print("\n" + "=" * 80)
-        print("\nSupported Language Features:")
-        print("  • Variable declarations: int x; string name;")
-        print("  • Assignments: x = 5; name = \"Alice\";")
-        print("  • Arithmetic: +, -, *, / (for integers)")
-        print("  • String concatenation: +")
-        print("  • Comparisons: ==, !=, <, >, <=, >=")
-        print("  • If-then-else: if (condition) then { ... } else { ... }")
-        print("  • Negative numbers: -5, -10, etc.")
-        print("\n" + "=" * 80)
-        print("\nCommands:")
-        print("  'exit' or 'quit' - Exit the program")
-        print("  'help'           - Show this help message")
-        print("=" * 80 + "\n")
+        print("=" * 70)
+        print(" " * 15 + "COMPILATEUR INTERACTIF — FRONTEND")
+        print("=" * 70)
+        print("""
+Phases d'analyse :
+  1. Analyse Lexicale   — Tokenisation du code source
+  2. Analyse Syntaxique — Construction de l'AST
+  3. Analyse Sémantique — Vérification des types et des portées
+
+Fonctionnalités du langage :
+  • Déclarations    : int x;  string s;  bool b;
+  • Initialisation  : int x = 5;  string s = "hello";
+  • Assignation     : x = x + 1;
+  • Arithmétique    : +  -  *  /  (entiers)
+  • Concaténation   : +  (chaînes)
+  • Comparaisons    : ==  !=  <  >  <=  >=
+  • Booléens        : true  false
+  • Conditions      : if (cond) then { ... } else { ... }
+  • Boucles         : while (cond) { ... }
+  • Expressions ()  : (a + b) * c
+  • Commentaires    : // ligne   /* bloc */
+""")
+        print("=" * 70)
 
     def print_help(self):
-        """Print help message"""
-        print("\n" + "=" * 80)
-        print("How to use this compiler")
-        print("=" * 80)
-        print("\nYou can enter multi-line programs. Type your code and press Enter.")
-        print("To execute, type 'run' on a new line.")
-        print("\nOr enter a complete program in one line:")
-        print("\n" + "=" * 80 + "\n")
+        print("""
+Commandes disponibles :
+  code      — Saisir du code multi-lignes (terminer avec 'run')
+  exemple   — Choisir un programme exemple
+  tokens    — Activer/désactiver l'affichage des tokens
+  aide      — Afficher cette aide
+  quitter   — Quitter le programme
+""")
 
-    def get_multiline_input(self) -> Optional[str]:
-        """Get multi-line input from user"""
-        print("\nEnter your code (type 'run' on a new line to execute, or 'cancel' to abort):")
-        print("-" * 80)
-
+    # ------------------------------------------------------------------
+    def get_multiline_input(self):
+        print("\nSaisissez votre code (tapez 'run' sur une ligne pour exécuter, 'annuler' pour abandonner) :")
+        print("-" * 70)
         lines = []
-        line_num = 1
-
+        n = 1
         try:
             while True:
                 try:
-                    line = input(f"{line_num:3d} | ")
-
-                    # Check for special commands
-                    if line.strip().lower() == 'run':
-                        break
-                    elif line.strip().lower() == 'cancel':
-                        print("Input cancelled.")
-                        return None
-
-                    lines.append(line)
-                    line_num += 1
-
+                    line = input(f"{n:3d} | ")
                 except EOFError:
-                    # Ctrl+D pressed
                     break
-
+                if line.strip().lower() == 'run':
+                    break
+                if line.strip().lower() == 'annuler':
+                    print("Saisie annulée.")
+                    return None
+                lines.append(line)
+                n += 1
         except KeyboardInterrupt:
-            print("\n\nInput cancelled.")
+            print("\nSaisie annulée.")
             return None
-
-        code = '\n'.join(lines)
-        print("-" * 80)
+        code = "\n".join(lines)
         return code if code.strip() else None
 
-    def analyze_code(self, code: str):
-        """Perform all three phases of analysis"""
-        print("\n" + "=" * 80)
-        print("COMPILATION RESULTS")
-        print("=" * 80)
+    def choose_example(self):
+        print("\nExemples disponibles :")
+        for key, (title, _) in EXAMPLES.items():
+            print(f"  {key}. {title}")
+        choice = input("\nNuméro de l'exemple : ").strip()
+        if choice in EXAMPLES:
+            title, code = EXAMPLES[choice]
+            print(f"\n--- {title} ---")
+            print(code)
+            return code
+        print("Exemple inconnu.")
+        return None
 
+    # ------------------------------------------------------------------
+    def analyze(self, code: str):
+        """Lance les trois phases d'analyse et affiche les résultats."""
+        print("\n" + "=" * 70)
+        print("RÉSULTATS DE LA COMPILATION")
+        print("=" * 70)
 
-        # Phase 1: Lexical Analysis
-        print("\n[PHASE 1: LEXICAL ANALYSIS]")
-        print("-" * 80)
+        # ---- Phase 1 : Analyse Lexicale --------------------------------
+        print("\n[PHASE 1 : ANALYSE LEXICALE]")
+        print("-" * 70)
 
         try:
             tokens = self.lexer.tokenize(code)
-            print(f"✓ Lexical analysis successful! Generated {len(tokens)} tokens.")
-            print("\nTokens:")
-            for i, token in enumerate(tokens, 1):
-                print(f"  {i:3d}. {token}")
-
-            lexical_success = True
-
-        except Exception as e:
-            print(f"✗ Lexical analysis failed!")
-            print(f"Error: {str(e)}")
-            lexical_success = False
+            print(f"✓ Succès — {len(tokens)} token(s) générés")
+            if self.show_tokens:
+                print("\nTokens :")
+                for i, tok in enumerate(tokens, 1):
+                    loc = f"ligne {tok.line}, col {tok.col}"
+                    print(f"  {i:3d}. {str(tok):<30}  [{loc}]")
+            lexical_ok = True
+        except LexicalError as e:
+            print(f"✗ Échec — {e}")
+            print("\n" + "=" * 70)
+            print("❌ COMPILATION ÉCHOUÉE — Phase 1")
+            print("=" * 70)
             return
 
-        # Phase 2: Syntax Analysis
-        print("\n" + "=" * 80)
-        print("[PHASE 2: SYNTAX ANALYSIS]")
-        print("-" * 80)
+        # ---- Phase 2 : Analyse Syntaxique ------------------------------
+        print("\n" + "=" * 70)
+        print("[PHASE 2 : ANALYSE SYNTAXIQUE]")
+        print("-" * 70)
 
         parser = RecursiveDescentParser(tokens)
         ast = parser.parse()
 
         if ast and not parser.errors:
-            print("✓ Syntax analysis successful! AST generated.")
-            print("\nAbstract Syntax Tree (AST):")
+            print("✓ Succès — AST construit")
+            print("\nArbre Syntaxique Abstrait (AST) :")
             print(ast)
-            syntax_success = True
+            syntax_ok = True
         else:
-            print("✗ Syntax analysis failed!")
-            print("\nParse Errors:")
-            for error in parser.errors:
-                print(f"  • {error}")
-            syntax_success = False
+            print("✗ Échec — Erreurs syntaxiques :")
+            for err in parser.errors:
+                print(f"  • {err}")
+            print("\n" + "=" * 70)
+            print("❌ COMPILATION ÉCHOUÉE — Phase 2")
+            print("=" * 70)
             return
 
-        # Phase 3: Semantic Analysis
-        print("\n" + "=" * 80)
-        print("[PHASE 3: SEMANTIC ANALYSIS]")
-        print("-" * 80)
+        # ---- Phase 3 : Analyse Sémantique ------------------------------
+        print("\n" + "=" * 70)
+        print("[PHASE 3 : ANALYSE SÉMANTIQUE]")
+        print("-" * 70)
 
         analyzer = SemanticAnalyzer()
-        semantic_success = analyzer.analyze(ast)
+        semantic_ok = analyzer.analyze(ast)
 
-        # Print symbol table
         print(str(analyzer.symbol_table))
 
-        # Print results
-        if semantic_success:
-            print("\n✓ Semantic analysis successful! No errors found.")
-            print("\n" + "=" * 80)
-            print("COMPILATION SUCCESSFUL!")
-            print("=" * 80)
-            print("\nAll three phases completed without errors:")
-            print("  ✓ Lexical Analysis")
-            print("  ✓ Syntax Analysis")
-            print("  ✓ Semantic Analysis")
-        else:
-            print("\n✗ Semantic analysis failed!")
-            print("\nSemantic Errors:")
-            for i, error in enumerate(analyzer.errors, 1):
-                print(f"  {i}. {error}")
-
-            print("\n" + "=" * 80)
-            print("❌ COMPILATION FAILED")
-            print("=" * 80)
-            print("\nPhase Results:")
-            print("  ✓ Lexical Analysis  - Success")
-            print("  ✓ Syntax Analysis   - Success")
-            print("  ✗ Semantic Analysis - Failed")
-
-        # Print warnings if any
         if analyzer.warnings:
-            print("\nWarnings:")
-            for i, warning in enumerate(analyzer.warnings, 1):
-                print(f"  {i}. {warning}")
+            print("\nAVERTISSEMENTS :")
+            for i, w in enumerate(analyzer.warnings, 1):
+                print(f"  {i}. ⚠  {w}")
 
-        print("\n" + "=" * 80 + "\n")
+        if semantic_ok:
+            print("\n✓ Succès — Aucune erreur sémantique")
+        else:
+            print("\n✗ Échec — Erreurs sémantiques :")
+            for i, e in enumerate(analyzer.errors, 1):
+                print(f"  {i}. {e}")
 
+        # ---- Résumé final ----------------------------------------------
+        print("\n" + "=" * 70)
+        if semantic_ok:
+            print("✅ COMPILATION RÉUSSIE")
+            print("  ✓ Analyse lexicale    — OK")
+            print("  ✓ Analyse syntaxique  — OK")
+            print("  ✓ Analyse sémantique  — OK")
+        else:
+            print("❌ COMPILATION ÉCHOUÉE — Phase 3")
+            print("  ✓ Analyse lexicale    — OK")
+            print("  ✓ Analyse syntaxique  — OK")
+            print("  ✗ Analyse sémantique  — ÉCHEC")
+        print("=" * 70 + "\n")
 
+    # ------------------------------------------------------------------
     def run(self):
-        """Main interactive loop"""
         self.print_banner()
 
         while True:
             try:
-                print("\nOptions:")
-                print("  1. Enter multiple line of code")
-                print("  2. Show help")
-                print("  3. Exit")
+                print("\nOptions : code | exemple | tokens | aide | quitter")
+                cmd = input(">>> ").strip()
 
-                choice = input("\nEnter your choice (1-3) or type single line of code directly: ").strip()
+                # Comparaison des commandes en minuscules, mais la casse
+                # du code source est PRÉSERVÉE pour l'analyse
+                cmd_lower = cmd.lower()
 
-                # Check for direct commands
-                if choice.lower() in ['exit', 'quit', '3']:
+                if cmd_lower in ('quitter', 'quit', 'exit', 'q'):
+                    print("Au revoir !")
                     break
 
-                elif choice.lower() == 'clear':
-                    # Clear screen (works on Unix-like systems)
-                    print("\033[2J\033[H")
-                    self.print_banner()
-                    continue
-
-                elif choice.lower() in ['help', '2']:
+                elif cmd_lower in ('aide', 'help', 'h'):
                     self.print_help()
-                    continue
 
-                elif choice == '1' or choice == '':
-                    # Get multi-line input
+                elif cmd_lower in ('tokens', 't'):
+                    self.show_tokens = not self.show_tokens
+                    state = "activé" if self.show_tokens else "désactivé"
+                    print(f"Affichage des tokens : {state}")
+
+                elif cmd_lower in ('exemple', 'example', 'e'):
+                    code = self.choose_example()
+                    if code:
+                        self.analyze(code)
+
+                elif cmd_lower in ('code', ''):
                     code = self.get_multiline_input()
                     if code:
-                        self.analyze_code(code)
+                        self.analyze(code)
 
                 else:
-                    # Treat input as code
-                    if choice.strip():
-                        self.analyze_code(choice)
+                    # Traite la saisie directe comme du code (casse préservée !)
+                    if cmd:
+                        self.analyze(cmd)
 
             except KeyboardInterrupt:
-                print("\n\nUse 'exit' or 'quit' to exit the program.\n")
-                continue
-
+                print("\nUtilisez 'quitter' pour sortir.\n")
             except Exception as e:
-                print(f"\nAn unexpected error occurred: {str(e)}")
-                print("Please try again.\n")
+                print(f"\nErreur inattendue : {e}\n")
 
 
 def main():
-    """Main entry point"""
     compiler = InteractiveCompiler()
     compiler.run()
 

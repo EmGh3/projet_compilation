@@ -1,333 +1,397 @@
+"""
+Semantic Analyzer — Phase 3 du compilateur
+
+Améliorations apportées :
+  - Détection des variables NON INITIALISÉES (déclarées mais jamais assignées)
+  - Support du type bool et des littéraux true/false
+  - Support de WhileStmt
+  - Support de DeclarationStmt avec initialisation (int x = 5;)
+  - Les erreurs indiquent le nom de la variable et le contexte précis
+  - Avertissement si une variable est déclarée mais jamais utilisée
+"""
+
+from __future__ import annotations
 from typing import Dict, List, Optional, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 from syntax_analyzer import (
-    ASTNode, Program, DeclarationStmt, AssignStmt, IfStmt,
-    Condition, BinaryOp, Identifier, Number, StringLiteral, Expression
+    ASTNode, Program, DeclarationStmt, AssignStmt, IfStmt, WhileStmt,
+    Condition, BinaryOp, UnaryOp, Identifier, Number, StringLiteral,
+    BoolLiteralNode, Expression,
 )
 
+VALID_TYPES = {'int', 'string', 'bool'}
+
+# Opérateurs valides par type pour les conditions
+VALID_RELOPS: Dict[str, Set[str]] = {
+    'int':    {'>', '<', '==', '!=', '>=', '<='},
+    'string': {'==', '!='},
+    'bool':   {'==', '!='},
+}
+
+
+# ---------------------------------------------------------------------------
+# Table des symboles
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SymbolInfo:
-    """Information about a symbol in the symbol table"""
     name: str
     var_type: str
     scope_level: int
-    declared_line: int = 0
+    initialized: bool = False   # True dès qu'une valeur lui est assignée
+    used: bool = False           # True dès qu'on la lit dans une expression
 
-    def __str__(self):
-        return f"{self.name}: {self.var_type} (scope {self.scope_level})"
+    def __str__(self) -> str:
+        init = "initialisée" if self.initialized else "NON initialisée"
+        return f"{self.name}: {self.var_type} (portée {self.scope_level}, {init})"
 
 
 class SymbolTable:
-    """Symbol table for managing variable declarations and scopes"""
+    """Pile de portées (scopes). Le scope 0 est global."""
 
     def __init__(self):
-        self.scopes: List[Dict[str, SymbolInfo]] = [{}]  # Stack of scopes
-        self.current_scope = 0
-        self.all_symbols: List[SymbolInfo] = []  # All symbols ever declared
+        self.scopes: List[Dict[str, SymbolInfo]] = [{}]
+        self.current_scope: int = 0
+        # Historique complet pour le rapport final
+        self.all_symbols: List[SymbolInfo] = []
 
     def enter_scope(self):
-        """Enter a new scope (e.g., entering an if-then-else block)"""
         self.current_scope += 1
         self.scopes.append({})
 
-    def exit_scope(self):
-        """Exit the current scope"""
-        if self.current_scope > 0:
-            self.scopes.pop()
-            self.current_scope -= 1
+    def exit_scope(self) -> List[SymbolInfo]:
+        """Quitte la portée courante et retourne les symboles qui y étaient déclarés."""
+        exiting = list(self.scopes[-1].values())
+        self.scopes.pop()
+        self.current_scope -= 1
+        return exiting
 
-    def declare(self, name: str, var_type: str, line: int = 0) -> bool:
-        """
-        Declare a variable in the current scope.
-        Returns True if successful, False if already declared in current scope.
-        """
-        current_scope_table = self.scopes[self.current_scope]
-
-        if name in current_scope_table:
-            return False  # Already declared in this scope
-
-        symbol = SymbolInfo(name, var_type, self.current_scope, line)
-        current_scope_table[name] = symbol
-        self.all_symbols.append(symbol)
+    def declare(self, name: str, var_type: str, initialized: bool = False) -> bool:
+        """Déclare une variable dans la portée courante. False si déjà déclarée."""
+        if name in self.scopes[self.current_scope]:
+            return False
+        info = SymbolInfo(name, var_type, self.current_scope, initialized)
+        self.scopes[self.current_scope][name] = info
+        self.all_symbols.append(info)
         return True
 
     def lookup(self, name: str) -> Optional[SymbolInfo]:
-        """
-        Look up a variable in the current scope and all parent scopes.
-        Returns SymbolInfo if found, None otherwise.
-        """
-        # Search from current scope up to global scope
-        for scope_level in range(self.current_scope, -1, -1):
-            if name in self.scopes[scope_level]:
-                return self.scopes[scope_level][name]
+        """Cherche la variable de la portée courante vers le scope global."""
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
         return None
 
-    def is_declared(self, name: str) -> bool:
-        """Check if a variable is declared in any accessible scope"""
-        return self.lookup(name) is not None
+    def mark_initialized(self, name: str):
+        """Marque la variable comme initialisée (dans la portée la plus proche)."""
+        for scope in reversed(self.scopes):
+            if name in scope:
+                scope[name].initialized = True
+                return
 
-    def get_type(self, name: str) -> Optional[str]:
-        """Get the type of a variable"""
-        symbol = self.lookup(name)
-        return symbol.var_type if symbol else None
+    def mark_used(self, name: str):
+        """Marque la variable comme utilisée."""
+        for scope in reversed(self.scopes):
+            if name in scope:
+                scope[name].used = True
+                return
 
-    def __str__(self):
-        """String representation of the symbol table"""
-        result = "Symbol Table:\n"
-        result += "=" * 50 + "\n"
-        for scope_level, scope in enumerate(self.scopes):
-            result += f"Scope {scope_level}:\n"
+    def __str__(self) -> str:
+        lines = ["Table des symboles :", "=" * 50]
+        for level, scope in enumerate(self.scopes):
+            lines.append(f"Portée {level} :")
             if scope:
-                for name, info in scope.items():
-                    result += f"  {info}\n"
+                for info in scope.values():
+                    lines.append(f"  {info}")
             else:
-                result += "  (empty)\n"
-        return result
+                lines.append("  (vide)")
+        return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Erreurs et avertissements
+# ---------------------------------------------------------------------------
 
 class SemanticError:
-    """Represents a semantic error found during analysis"""
-
     def __init__(self, message: str, node: Optional[ASTNode] = None):
         self.message = message
         self.node = node
 
-    def __str__(self):
-        return f"Semantic Error: {self.message}"
+    def __str__(self) -> str:
+        return f"Erreur sémantique : {self.message}"
 
+
+# ---------------------------------------------------------------------------
+# Analyseur sémantique
+# ---------------------------------------------------------------------------
 
 class SemanticAnalyzer:
-    """
-    Semantic analyzer that performs:
-    - Type checking
-    - Scope resolution
-    - Variable declaration checking
-    - Expression type validation
-    """
-
     def __init__(self):
         self.symbol_table = SymbolTable()
         self.errors: List[SemanticError] = []
         self.warnings: List[str] = []
 
-    def add_error(self, message: str, node: Optional[ASTNode] = None):
-        """Add a semantic error"""
-        self.errors.append(SemanticError(message, node))
+    def _error(self, msg: str, node: Optional[ASTNode] = None):
+        self.errors.append(SemanticError(msg, node))
 
-    def add_warning(self, message: str):
-        """Add a warning message"""
-        self.warnings.append(message)
+    def _warn(self, msg: str):
+        self.warnings.append(msg)
+
+    # ------------------------------------------------------------------
+    # Point d'entrée
+    # ------------------------------------------------------------------
 
     def analyze(self, ast: Program) -> bool:
         """
-        Analyze the AST for semantic errors.
-        Returns True if no errors found, False otherwise.
+        Analyse l'AST. Retourne True si aucune erreur sémantique.
         """
-        self.errors = []
-        self.warnings = []
-
-        # Analyze the program
-        self.analyze_program(ast)
-
+        self.errors.clear()
+        self.warnings.clear()
+        self._analyze_program(ast)
+        self._check_unused_variables()
         return len(self.errors) == 0
 
-    def analyze_program(self, program: Program):
-        """Analyze the entire program"""
-        for statement in program.statements:
-            self.analyze_statement(statement)
+    # ------------------------------------------------------------------
+    # Nœuds du programme
+    # ------------------------------------------------------------------
 
-    def analyze_statement(self, stmt: ASTNode):
-        """Analyze a single statement"""
+    def _analyze_program(self, program: Program):
+        for stmt in program.statements:
+            self._analyze_statement(stmt)
+
+    def _analyze_statement(self, stmt: ASTNode):
         if isinstance(stmt, DeclarationStmt):
-            self.analyze_declaration(stmt)
+            self._analyze_declaration(stmt)
         elif isinstance(stmt, AssignStmt):
-            self.analyze_assignment(stmt)
+            self._analyze_assignment(stmt)
         elif isinstance(stmt, IfStmt):
-            self.analyze_if_stmt(stmt)
+            self._analyze_if_stmt(stmt)
+        elif isinstance(stmt, WhileStmt):
+            self._analyze_while_stmt(stmt)
         else:
-            self.add_error(f"Unknown statement type: {type(stmt).__name__}", stmt)
+            self._error(f"Type de nœud inconnu : {type(stmt).__name__}", stmt)
 
-    def analyze_declaration(self, decl: DeclarationStmt):
-        """Analyze a variable declaration"""
-        # Check if type is valid
-        if decl.var_type not in ['int', 'string']:
-            self.add_error(
-                f"Invalid type '{decl.var_type}'. Valid types are: int, string",
-                decl
+    # --- Déclaration ---
+    def _analyze_declaration(self, decl: DeclarationStmt):
+        if decl.var_type not in VALID_TYPES:
+            self._error(
+                f"Type invalide '{decl.var_type}'. Types valides : {', '.join(VALID_TYPES)}",
+                decl,
             )
 
-        # Check if variable is already declared in current scope
-        if not self.symbol_table.declare(decl.identifier, decl.var_type):
-            self.add_error(
-                f"Variable '{decl.identifier}' is already declared in the current scope",
-                decl
+        initialized = False
+
+        if decl.init_expr is not None:
+            expr_type = self._infer_type(decl.init_expr)
+            if expr_type is not None and expr_type != decl.var_type:
+                self._error(
+                    f"Initialisation invalide : impossible d'assigner un {expr_type} "
+                    f"à '{decl.identifier}' de type {decl.var_type}",
+                    decl,
+                )
+            initialized = (expr_type == decl.var_type)
+
+        if not self.symbol_table.declare(decl.identifier, decl.var_type, initialized):
+            self._error(
+                f"Variable '{decl.identifier}' déjà déclarée dans cette portée", decl
             )
 
-    def analyze_assignment(self, assign: AssignStmt):
-        """Analyze an assignment statement"""
-        # Check if variable is declared
-        if not self.symbol_table.is_declared(assign.identifier):
-            self.add_error(
-                f"Variable '{assign.identifier}' is used before declaration",
-                assign
+    # --- Assignation ---
+    def _analyze_assignment(self, assign: AssignStmt):
+        info = self.symbol_table.lookup(assign.identifier)
+        if info is None:
+            self._error(
+                f"Variable '{assign.identifier}' utilisée avant déclaration", assign
             )
             return
 
-        # Get the variable's declared type
-        var_type = self.symbol_table.get_type(assign.identifier)
-
-        # Get the expression's type
-        expr_type = self.infer_expression_type(assign.expression)
-
+        expr_type = self._infer_type(assign.expression)
         if expr_type is None:
-            return  # Error already reported in expression analysis
+            return  # Erreur déjà signalée dans _infer_type
 
-        # Check type compatibility
-        if var_type != expr_type:
-            self.add_error(
-                f"Type mismatch: Cannot assign {expr_type} to variable '{assign.identifier}' of type {var_type}",
-                assign
+        if info.var_type != expr_type:
+            self._error(
+                f"Incompatibilité de types : impossible d'assigner un {expr_type} "
+                f"à '{assign.identifier}' de type {info.var_type}",
+                assign,
             )
+        else:
+            self.symbol_table.mark_initialized(assign.identifier)
 
-    def analyze_if_stmt(self, if_stmt: IfStmt):
-        """Analyze an if-then-else statement"""
-        # Analyze the condition
-        self.analyze_condition(if_stmt.condition)
+    # --- If ---
+    def _analyze_if_stmt(self, stmt: IfStmt):
+        self._analyze_condition(stmt.condition)
 
-        # Enter new scope for then body
         self.symbol_table.enter_scope()
-        for stmt in if_stmt.body:
-            self.analyze_statement(stmt)
-        self.symbol_table.exit_scope()
+        for s in stmt.body:
+            self._analyze_statement(s)
+        leaving = self.symbol_table.exit_scope()
+        self._warn_uninitialized_in_scope(leaving)
 
-        # Enter new scope for else body if it exists
-        if if_stmt.else_body:
+        if stmt.else_body:
             self.symbol_table.enter_scope()
-            for stmt in if_stmt.else_body:
-                self.analyze_statement(stmt)
-            self.symbol_table.exit_scope()
+            for s in stmt.else_body:
+                self._analyze_statement(s)
+            leaving = self.symbol_table.exit_scope()
+            self._warn_uninitialized_in_scope(leaving)
 
-    def analyze_condition(self, condition: Condition):
-        """Analyze a condition in an if statement"""
-        # Get types of left and right expressions
-        left_type = self.infer_expression_type(condition.left)
-        right_type = self.infer_expression_type(condition.right)
+    # --- While ---
+    def _analyze_while_stmt(self, stmt: WhileStmt):
+        self._analyze_condition(stmt.condition)
+
+        self.symbol_table.enter_scope()
+        for s in stmt.body:
+            self._analyze_statement(s)
+        leaving = self.symbol_table.exit_scope()
+        self._warn_uninitialized_in_scope(leaving)
+
+    # --- Condition ---
+    def _analyze_condition(self, cond: Condition):
+        left_type = self._infer_type(cond.left)
+        right_type = self._infer_type(cond.right)
 
         if left_type is None or right_type is None:
-            return  # Error already reported
+            return
 
-        # Check that both sides have compatible types
         if left_type != right_type:
-            self.add_error(
-                f"Type mismatch in condition: comparing {left_type} with {right_type}",
-                condition
+            self._error(
+                f"Incompatibilité dans la condition : comparaison entre {left_type} et {right_type}",
+                cond,
+            )
+            return
+
+        valid_ops = VALID_RELOPS.get(left_type, set())
+        if cond.operator not in valid_ops:
+            self._error(
+                f"Opérateur '{cond.operator}' invalide pour le type {left_type}. "
+                f"Opérateurs valides : {', '.join(sorted(valid_ops))}",
+                cond,
             )
 
-        # Check that the operator is valid for the types
-        valid_ops = {
-            'int': ['>', '<', '==', '!=', '>=', '<='],
-            'string': ['==', '!=']
-        }
+    # ------------------------------------------------------------------
+    # Inférence de type des expressions
+    # ------------------------------------------------------------------
 
-        if condition.operator not in valid_ops.get(left_type, []):
-            self.add_error(
-                f"Invalid operator '{condition.operator}' for type {left_type}",
-                condition
-            )
-
-    def infer_expression_type(self, expr: Expression) -> Optional[str]:
-        """
-        Infer the type of an expression.
-        Returns 'int', 'string', or None if type cannot be determined.
-        """
+    def _infer_type(self, expr: Expression) -> Optional[str]:
         if isinstance(expr, Number):
             return 'int'
 
-        elif isinstance(expr, StringLiteral):
+        if isinstance(expr, StringLiteral):
             return 'string'
 
-        elif isinstance(expr, Identifier):
-            # Look up the variable's type
-            if not self.symbol_table.is_declared(expr.name):
-                self.add_error(
-                    f"Variable '{expr.name}' is used before declaration",
-                    expr
+        if isinstance(expr, BoolLiteralNode):
+            return 'bool'
+
+        if isinstance(expr, Identifier):
+            info = self.symbol_table.lookup(expr.name)
+            if info is None:
+                self._error(f"Variable '{expr.name}' utilisée avant déclaration", expr)
+                return None
+            if not info.initialized:
+                self._warn(
+                    f"Variable '{expr.name}' utilisée avant d'avoir été initialisée"
+                )
+            self.symbol_table.mark_used(expr.name)
+            return info.var_type
+
+        if isinstance(expr, BinaryOp):
+            return self._infer_binary_op(expr)
+
+        if isinstance(expr, UnaryOp):
+            operand_type = self._infer_type(expr.operand)
+            if operand_type != 'int':
+                self._error(
+                    f"L'opérateur unaire '{expr.op}' requiert un int, obtenu {operand_type}",
+                    expr,
                 )
                 return None
-            return self.symbol_table.get_type(expr.name)
+            return 'int'
 
-        elif isinstance(expr, BinaryOp):
-            return self.analyze_binary_op(expr)
+        self._error(f"Type d'expression inconnu : {type(expr).__name__}", expr)
+        return None
 
-        else:
-            self.add_error(f"Unknown expression type: {type(expr).__name__}", expr)
+    def _infer_binary_op(self, binop: BinaryOp) -> Optional[str]:
+        left_t = self._infer_type(binop.left)
+        right_t = self._infer_type(binop.right)
+
+        if left_t is None or right_t is None:
             return None
 
-    def analyze_binary_op(self, binop: BinaryOp) -> Optional[str]:
-        """Analyze a binary operation and return its result type"""
-        # Get types of operands
-        left_type = self.infer_expression_type(binop.left)
-        right_type = self.infer_expression_type(binop.right)
-
-        if left_type is None or right_type is None:
-            return None  # Error already reported
-
-        # Check type compatibility for the operation
-        if binop.op in ['+', '-', '*', '/']:
-            # Arithmetic operations
-            if binop.op == '+':
-                # Addition can work on both int and string (concatenation)
-                if left_type == right_type:
-                    return left_type
-                else:
-                    self.add_error(
-                        f"Type mismatch in binary operation: cannot perform '{binop.op}' on {left_type} and {right_type}",
-                        binop
-                    )
-                    return None
-            else:
-                # Subtraction, multiplication, division only work on int
-                if left_type == 'int' and right_type == 'int':
-                    return 'int'
-                else:
-                    self.add_error(
-                        f"Invalid operation: '{binop.op}' requires int operands, got {left_type} and {right_type}",
-                        binop
-                    )
-                    return None
-        else:
-            self.add_error(f"Unknown binary operator: {binop.op}", binop)
+        if binop.op == '+':
+            # int + int → int  |  string + string → string (concaténation)
+            if left_t == right_t and left_t in ('int', 'string'):
+                return left_t
+            self._error(
+                f"L'opérateur '+' ne peut pas être appliqué à {left_t} et {right_t}. "
+                f"Combinaisons valides : int+int, string+string",
+                binop,
+            )
             return None
+
+        if binop.op in ('-', '*', '/'):
+            if left_t == 'int' and right_t == 'int':
+                return 'int'
+            self._error(
+                f"L'opérateur '{binop.op}' requiert deux int, obtenu {left_t} et {right_t}",
+                binop,
+            )
+            return None
+
+        self._error(f"Opérateur binaire inconnu : '{binop.op}'", binop)
+        return None
+
+    # ------------------------------------------------------------------
+    # Vérifications post-analyse
+    # ------------------------------------------------------------------
+
+    def _check_unused_variables(self):
+        """Avertit pour toute variable déclarée mais jamais lue."""
+        for info in self.symbol_table.all_symbols:
+            if not info.used:
+                self._warn(
+                    f"Variable '{info.name}' déclarée (portée {info.scope_level}) "
+                    f"mais jamais utilisée"
+                )
+
+    def _warn_uninitialized_in_scope(self, symbols: List[SymbolInfo]):
+        """Avertit pour les variables d'une portée sortante non initialisées."""
+        for info in symbols:
+            if not info.initialized:
+                self._warn(
+                    f"Variable '{info.name}' (portée {info.scope_level}) "
+                    f"déclarée mais jamais initialisée"
+                )
+
+    # ------------------------------------------------------------------
+    # Rapport
+    # ------------------------------------------------------------------
 
     def get_report(self) -> str:
-        """Generate a detailed analysis report"""
-        report = []
-        report.append("=" * 60)
-        report.append("SEMANTIC ANALYSIS REPORT")
-        report.append("=" * 60)
+        lines = [
+            "=" * 60,
+            "RAPPORT D'ANALYSE SÉMANTIQUE",
+            "=" * 60,
+            "",
+            str(self.symbol_table),
+        ]
 
-        # Symbol table
-        report.append("\n" + str(self.symbol_table))
-
-        # Errors
         if self.errors:
-            report.append("\nERRORS FOUND:")
-            report.append("-" * 60)
-            for i, error in enumerate(self.errors, 1):
-                report.append(f"{i}. {error}")
+            lines += ["", "ERREURS :", "-" * 60]
+            for i, e in enumerate(self.errors, 1):
+                lines.append(f"  {i}. {e}")
         else:
-            report.append("\n✓ No semantic errors found!")
+            lines.append("\n✓ Aucune erreur sémantique détectée !")
 
-        # Warnings
         if self.warnings:
-            report.append("\nWARNINGS:")
-            report.append("-" * 60)
-            for i, warning in enumerate(self.warnings, 1):
-                report.append(f"{i}. {warning}")
+            lines += ["", "AVERTISSEMENTS :", "-" * 60]
+            for i, w in enumerate(self.warnings, 1):
+                lines.append(f"  {i}. {w}")
 
-        report.append("\n" + "=" * 60)
-        report.append(f"Summary: {len(self.errors)} error(s), {len(self.warnings)} warning(s)")
-        report.append("=" * 60)
-
-        return "\n".join(report)
+        lines += [
+            "",
+            "=" * 60,
+            f"Résumé : {len(self.errors)} erreur(s), {len(self.warnings)} avertissement(s)",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
