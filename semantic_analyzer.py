@@ -7,6 +7,7 @@ Améliorations apportées :
   - Support de WhileStmt
   - Support de DeclarationStmt avec initialisation (int x = 5;)
   - Les erreurs indiquent le nom de la variable et le contexte précis
+  - Avertissement si une variable est déclarée mais jamais utilisée
 """
 
 from __future__ import annotations
@@ -148,6 +149,7 @@ class SemanticAnalyzer:
         self.errors.clear()
         self.warnings.clear()
         self._analyze_program(ast)
+        self._check_unused_variables()
         return len(self.errors) == 0
 
     # ------------------------------------------------------------------
@@ -224,13 +226,15 @@ class SemanticAnalyzer:
         self.symbol_table.enter_scope()
         for s in stmt.body:
             self._analyze_statement(s)
-        self.symbol_table.exit_scope()          # ← fix: was missing
+        leaving = self.symbol_table.exit_scope()
+        self._warn_uninitialized_in_scope(leaving)
 
         if stmt.else_body:
             self.symbol_table.enter_scope()
             for s in stmt.else_body:
                 self._analyze_statement(s)
-            self.symbol_table.exit_scope()      # ← fix: was missing
+            leaving = self.symbol_table.exit_scope()
+            self._warn_uninitialized_in_scope(leaving)
 
     # --- While ---
     def _analyze_while_stmt(self, stmt: WhileStmt):
@@ -240,6 +244,7 @@ class SemanticAnalyzer:
         for s in stmt.body:
             self._analyze_statement(s)
         leaving = self.symbol_table.exit_scope()
+        self._warn_uninitialized_in_scope(leaving)
 
     # --- Condition ---
     def _analyze_condition(self, cond: Condition):
@@ -335,6 +340,28 @@ class SemanticAnalyzer:
 
         self._error(f"Opérateur binaire inconnu : '{binop.op}'", binop)
         return None
+
+    # ------------------------------------------------------------------
+    # Vérifications post-analyse
+    # ------------------------------------------------------------------
+
+    def _check_unused_variables(self):
+        """Avertit pour toute variable déclarée mais jamais lue."""
+        for info in self.symbol_table.all_symbols:
+            if not info.used:
+                self._warn(
+                    f"Variable '{info.name}' déclarée (portée {info.scope_level}) "
+                    f"mais jamais utilisée"
+                )
+
+    def _warn_uninitialized_in_scope(self, symbols: List[SymbolInfo]):
+        """Avertit pour les variables d'une portée sortante non initialisées."""
+        for info in symbols:
+            if not info.initialized:
+                self._warn(
+                    f"Variable '{info.name}' (portée {info.scope_level}) "
+                    f"déclarée mais jamais initialisée"
+                )
 
     # ------------------------------------------------------------------
     # Rapport

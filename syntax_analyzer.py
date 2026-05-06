@@ -306,16 +306,21 @@ class RecursiveDescentParser:
 
     def _synchronize(self):
         start = self.pos
+        depth = 0
         while not self._at_end():
             t = self._cur()
-            if isinstance(t, Operator) and t.symbol == ';':
-                self._advance()
+            if isinstance(t, Operator) and t.symbol == ';' and depth == 0:
+                self._advance()  # consume ';', resume from next statement
                 return
+            if isinstance(t, Operator) and t.symbol == '{':
+                depth += 1
             if isinstance(t, Operator) and t.symbol == '}':
-                return
+                if depth == 0:
+                    return  # stop before a '}' we don't own
+                depth -= 1
             self._advance()
         if self.pos == start and not self._at_end():
-            self._advance()  # force progress, prevent infinite loop
+            self._advance()
     # ------------------------------------------------------------------
     # Point d'entrée
     # ------------------------------------------------------------------
@@ -367,6 +372,17 @@ class RecursiveDescentParser:
         # Assignation
         if isinstance(t, LexIdent):
             return self._parse_assignment()
+
+        # Orphaned 'else' — its 'if' was already parsed; skip the whole else block
+        if self._is_keyword('else'):
+            self._error(f"'else' inattendu sans 'if' correspondant")
+            self._advance()  # consume 'else'
+            if self._is_operator('{'):
+                self._advance()  # consume '{'
+                # skip everything until matching '}'
+                self._parse_statement_list(stop_on_rbrace=True)
+                self._consume_operator('}')
+            return None
 
         self._error(f"Instruction inattendue : {t}")
         self._synchronize()
