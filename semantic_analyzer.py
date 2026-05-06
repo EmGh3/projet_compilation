@@ -224,11 +224,13 @@ class SemanticAnalyzer:
         self.symbol_table.enter_scope()
         for s in stmt.body:
             self._analyze_statement(s)
+        self.symbol_table.exit_scope()          # ← fix: was missing
 
         if stmt.else_body:
             self.symbol_table.enter_scope()
             for s in stmt.else_body:
                 self._analyze_statement(s)
+            self.symbol_table.exit_scope()      # ← fix: was missing
 
     # --- While ---
     def _analyze_while_stmt(self, stmt: WhileStmt):
